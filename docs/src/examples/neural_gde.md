@@ -8,7 +8,7 @@ In this tutorial we will use Graph Differential Equations (GDEs) to perform clas
 
 ```julia
 # Load the packages
-using GeometricFlux, Flux, JLD2, SparseArrays, DiffEqFlux, DifferentialEquations
+using GeometricFlux, JLD2, SparseArrays, DiffEqFlux, DifferentialEquations
 using Flux: onehotbatch, onecold, logitcrossentropy, throttle
 using Statistics: mean
 using LightGraphs: adjacency_matrix
@@ -80,7 +80,7 @@ end
 
 ```julia
 # Load the packages
-using GeometricFlux, Flux, JLD2, SparseArrays, DiffEqFlux, DifferentialEquations
+using GeometricFlux, JLD2, SparseArrays, DiffEqFlux, DifferentialEquations
 using Flux: onehotbatch, onecold, crossentropy, throttle
 using Statistics: mean
 using LightGraphs: adjacency_matrix
@@ -145,7 +145,7 @@ model = Chain(GCNConv(adj_mat, num_features=>hidden, relu),
 
 ## Training Configuration
 
-### Loss Function and Accurary
+### Loss Function and Accuracy
 
 We shall be using the standard categorical crossentropy loss function which is used for multiclass classification tasks.
 

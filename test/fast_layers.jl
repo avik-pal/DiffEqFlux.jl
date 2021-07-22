@@ -1,4 +1,4 @@
-using Flux, DiffEqFlux, Test, StaticArrays
+using Flux, DiffEqFlux, Test, StaticArrays, Zygote
 
 fd = FastDense(2,25,tanh)
 pd = initial_params(fd)
@@ -13,6 +13,21 @@ p2 = initial_params(f2)
 f = FastChain(FastDense(2,25,tanh),FastDense(25,2,tanh))
 p = initial_params(f)
 @test f(ones(2),p) == f2(f1(ones(2),p[1:length(p1)]),p[length(p1)+1:end])
+
+fd1 = FastDense(2,25,tanh,bias=false)
+pd1 = initial_params(fd1)
+fd1(ones(2),pd1)
+
+f3 = FastDense(2,25,tanh,bias=false)
+f4 = FastDense(25,2,tanh,bias=false)
+p3 = initial_params(f3)
+p4 = initial_params(f4)
+
+@test FastChain(f3,f4)(ones(2),[p3;p4]) == f4(f3(ones(2),p3),p4)
+
+f5 = FastChain(FastDense(2,25,tanh,bias=false),FastDense(25,2,tanh,bias=false))
+p5 = initial_params(f5)
+@test f5(ones(2),p5) == f4(f3(ones(2),p5[1:length(p3)]),p5[length(p3)+1:end])
 
 fs = StaticDense(2,25,tanh)
 x = rand(2)
@@ -44,3 +59,25 @@ testgrad = Flux.Zygote.gradient((x,p)->sum(ts(x,p)),x,pd)
 fsgrad = Flux.Zygote.gradient((x,p)->sum(fs(x,p)),SVector{2}(x),SVector{75}(pd))
 @test fsgrad[1] isa SArray
 @test fsgrad[2] isa SArray
+
+layer = FastDense(3, 4, bias=false)
+p = initial_params(layer)
+
+rand_loss(p) = begin
+    y = sum(abs2, layer(randn(3, 5), p))
+end
+
+y, back = Zygote.pullback(rand_loss, p)
+grad = back(1.0)[1]
+@test length(grad) == length(p)
+
+layer = StaticDense(3, 4, bias=false)
+p = initial_params(layer)
+
+rand_loss(p) = begin
+    y = sum(abs2, layer(randn(3), p))
+end
+
+y, back = Zygote.pullback(rand_loss, p)
+grad = back(1.0)[1]
+@test length(grad) == length(p)

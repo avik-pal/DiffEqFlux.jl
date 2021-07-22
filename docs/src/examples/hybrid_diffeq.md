@@ -7,7 +7,7 @@ model and the universal differential equation is trained to uncover the missing
 dynamical equations.
 
 ```julia
-using DiffEqFlux, DifferentialEquations, Flux, Optim, Plots, DiffEqSensitivity
+using DiffEqFlux, DifferentialEquations, Plots
 u0 = Float32[2.; 0.]
 datasize = 100
 tspan = (0.0f0,10.5f0)
@@ -71,9 +71,8 @@ Flux.train!(loss_n_ode, ps, data, ADAM(0.05), cb = cba)
 
 ## Note on Sensitivity Methods
 
-Current implementation of adjoint sensitivities are not compatible with callbacks
-that effect the state `u`, or are implicitly triggered with respect to `u`
-(i.e. a ContinuousCallback whose `condition` uses `u`). For these types of equations,
-methods based on discrete sensitivity analysis via automatic differentiation, like
-`ReverseDiffAdjoint`, `TrackerAdjoint`, or `ForwardDiffAdjoint` are the methods
-to use (and `ReverseDiffAdjoint` is demonstrated above).
+Only some continuous adjoint sensitivities are compatible with callbacks, namely
+`BacksolveAdjoint` and `InterpolatingAdjoint`. All methods based on discrete sensitivity
+analysis via automatic differentiation, like `ReverseDiffAdjoint`, `TrackerAdjoint`, or
+`ForwardDiffAdjoint` are the methods to use (and `ReverseDiffAdjoint` is demonstrated above),
+are compatible with events. This applies to SDEs, DAEs, and DDEs as well.

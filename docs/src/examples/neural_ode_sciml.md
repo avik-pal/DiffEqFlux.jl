@@ -1,46 +1,56 @@
 # Neural Ordinary Differential Equations with sciml_train
 
-We can use DiffEqFlux.jl to define, solve, and train neural ordinary
-differential equations. A neural ODE is an ODE where a neural network defines
-its derivative function. Thus for example, with the multilayer perceptron neural
-network `Chain(Dense(2, 50, tanh), Dense(50, 2))`,
+DiffEqFlux.jl defines `sciml_train` which is a high level utility that automates
+a lot of the choices, using heuristics to determine a potentially efficient method.
+However, in some cases you may want more control over the optimization process.
+In this example we will use this utility to train a neural ODE to some
+generated data. A neural ODE is an ODE where a neural
+network defines its derivative function. Thus for example, with the multilayer
+perceptron neural network `FastChain(FastDense(2, 50, tanh), FastDense(50, 2))`,
+we obtain  the following results.
 
 ## Copy-Pasteable Code
 
-Before getting to the explanation, here's some code to start with. We will follow
-wil a full explanation of the definition and training process:
+Before getting to the explanation, here's some code to start with. We will
+follow a full explanation of the definition and training process:
 
 ```julia
-using DiffEqFlux, OrdinaryDiffEq, Flux, Optim, Plots
+using DiffEqFlux, DifferentialEquations, Plots, GalacticOptim
 
-u0 = Float32[2.0; 0.0]
-datasize = 30
-tspan = (0.0f0, 1.5f0)
-tsteps = range(tspan[1], tspan[2], length = datasize)
+u0 = Float32[2.0; 0.0] # Initial condition
+datasize = 30 # Number of data points
+tspan = (0.0f0, 1.5f0) # Time range
+tsteps = range(tspan[1], tspan[2], length = datasize) # Split time range into equal steps for each data point
 
+# Function that will generate the data we are trying to fit
 function trueODEfunc(du, u, p, t)
     true_A = [-0.1 2.0; -2.0 -0.1]
-    du .= ((u.^3)'true_A)'
+    du .= ((u.^3)'true_A)' # Need transposes to make the matrix multiplication work
 end
 
+# Define the problem with the function above
 prob_trueode = ODEProblem(trueODEfunc, u0, tspan)
+# Solve and take just the solution array
 ode_data = Array(solve(prob_trueode, Tsit5(), saveat = tsteps))
 
-dudt2 = FastChain((x, p) -> x.^3,
-                  FastDense(2, 50, tanh),
+# Make a neural net with a NeuralODE layer
+dudt2 = FastChain((x, p) -> x.^3, # Guess a cubic function
+                  FastDense(2, 50, tanh), # Multilayer perceptron for the part we don't know
                   FastDense(50, 2))
 prob_neuralode = NeuralODE(dudt2, tspan, Tsit5(), saveat = tsteps)
 
+# Array of predictions from NeuralODE with parameters p starting at initial condition u0
 function predict_neuralode(p)
   Array(prob_neuralode(u0, p))
 end
 
 function loss_neuralode(p)
     pred = predict_neuralode(p)
-    loss = sum(abs2, ode_data .- pred)
+    loss = sum(abs2, ode_data .- pred) # Just sum of squared error
     return loss, pred
 end
 
+# Callback function to observe training
 callback = function (p, l, pred; doplot = true)
   display(l)
   # plot current prediction against data
@@ -52,25 +62,19 @@ callback = function (p, l, pred; doplot = true)
   return false
 end
 
+# Parameters are prob_neuralode.p
 result_neuralode = DiffEqFlux.sciml_train(loss_neuralode, prob_neuralode.p,
-                                          ADAM(0.05), cb = callback,
-                                          maxiters = 300)
-
-result_neuralode2 = DiffEqFlux.sciml_train(loss_neuralode,
-                                           result_neuralode.minimizer,
-                                           LBFGS(),
-                                           cb = callback,
-                                           allow_f_increases = false)
+                                          cb = callback)
 ```
 
 ![Neural ODE](https://user-images.githubusercontent.com/1814174/88589293-e8207f80-d026-11ea-86e2-8a3feb8252ca.gif)
 
 ## Explanation
 
-Let's get a time series array from the Lotka-Volterra equation as data:
+Let's generate a time series array from a cubic equation as data:
 
 ```julia
-using DiffEqFlux, OrdinaryDiffEq, Flux, Optim, Plots
+using DiffEqFlux, DifferentialEquations, Plots
 
 u0 = Float32[2.0; 0.0]
 datasize = 30
@@ -107,9 +111,9 @@ dudt2 = Chain(x -> x.^3,
 
 In our model we used the `x -> x.^3` assumption in the model. By incorporating
 structure into our equations, we can reduce the required size and training time
-for the neural network, but a good guess needs to be known!
+for the neural network, but we need a good guess!
 
-From here we build a loss function around it. The `NeuralODE` has an optional
+From here, we build a loss function around our `NeuralODE`. `NeuralODE` has an optional
 second argument for new parameters which we will use to iteratively change the
 neural network in our training loop. We will use the L2 loss of the network's
 output against the time series data:
@@ -142,83 +146,18 @@ callback = function (p, l, pred; doplot = false)
 end
 ```
 
-We then train the neural network to learn the ODE.
-
-Here we showcase starting the optimization with `ADAM` to more quickly find a
-minimum, and then honing in on the minimum by using `LBFGS`. By using the two
-together, we are able to fit the neural ODE in 9 seconds! (Note, the timing
-commented out the plotting).
+We then train the neural network to learn the ODE. `sciml_train` chooses heuristics
+that train quickly and simply:
 
 ```julia
-# Train using the ADAM optimizer
 result_neuralode = DiffEqFlux.sciml_train(loss_neuralode, prob_neuralode.p,
-                                          ADAM(0.05), cb = callback,
-                                          maxiters = 300)
-
-* Status: failure (reached maximum number of iterations)
-
-* Candidate solution
-   Minimizer: [4.38e-01, -6.02e-01, 4.98e-01,  ...]
-   Minimum:   8.691715e-02
-
-* Found with
-   Algorithm:     ADAM
-   Initial Point: [-3.02e-02, -5.40e-02, 2.78e-01,  ...]
-
-* Convergence measures
-   |x - x'|               = NaN ≰ 0.0e+00
-   |x - x'|/|x'|          = NaN ≰ 0.0e+00
-   |f(x) - f(x')|         = NaN ≰ 0.0e+00
-   |f(x) - f(x')|/|f(x')| = NaN ≰ 0.0e+00
-   |g(x)|                 = NaN ≰ 0.0e+00
-
-* Work counters
-   Seconds run:   5  (vs limit Inf)
-   Iterations:    300
-   f(x) calls:    300
-   ∇f(x) calls:   300
+                                          cb = callback)
 ```
 
-We then complete the training using a different optimizer starting from where
-`ADAM` stopped. We do `allow_f_increases=false` to make the optimization automatically
-halt when near the minimum.
-
-```julia
-# Retrain using the LBFGS optimizer
-result_neuralode2 = DiffEqFlux.sciml_train(loss_neuralode,
-                                           result_neuralode.minimizer,
-                                           LBFGS(),
-                                           cb = callback,
-                                           allow_f_increases = false)
-
-* Status: success
-
-* Candidate solution
-   Minimizer: [4.23e-01, -6.24e-01, 4.41e-01,  ...]
-   Minimum:   1.429496e-02
-
-* Found with
-   Algorithm:     L-BFGS
-   Initial Point: [4.38e-01, -6.02e-01, 4.98e-01,  ...]
-
-* Convergence measures
-   |x - x'|               = 1.46e-11 ≰ 0.0e+00
-   |x - x'|/|x'|          = 1.26e-11 ≰ 0.0e+00
-   |f(x) - f(x')|         = 0.00e+00 ≤ 0.0e+00
-   |f(x) - f(x')|/|f(x')| = 0.00e+00 ≤ 0.0e+00
-   |g(x)|                 = 4.28e-02 ≰ 1.0e-08
-
-* Work counters
-   Seconds run:   4  (vs limit Inf)
-   Iterations:    35
-   f(x) calls:    336
-   ∇f(x) calls:   336
-```
-
-## Usage without the layer
+## Usage Without the Layer Function
 
 Note that you can equivalently define the NeuralODE by hand instead of using
-the layer function. With `FastChain` this would look like:
+the `NeuralODE`. With `FastChain` this would look like:
 
 ```julia
 dudt!(u, p, t) = dudt2(u, p)
@@ -239,10 +178,10 @@ my_neural_ode_prob = solve(prob, Tsit5(), args...; kwargs...)
 
 and then one would use `solve` for the prediction like in other tutorials.
 
-In total, the from scratch form looks like:
+In total, the 'from-scratch' form looks like:
 
 ```julia
-using DiffEqFlux, OrdinaryDiffEq, Flux, Optim, Plots
+using DiffEqFlux, DifferentialEquations, Plots, GalacticOptim
 
 u0 = Float32[2.0; 0.0]
 datasize = 30
@@ -260,13 +199,14 @@ ode_data = Array(solve(prob_trueode, Tsit5(), saveat = tsteps))
 dudt2 = FastChain((x, p) -> x.^3,
                   FastDense(2, 50, tanh),
                   FastDense(50, 2))
-neural_ode_f(u,p,t) = dudt2(u,p)
-pinit = initial_params(dudt2)
-prob = ODEProblem(neural_ode_f, u0, tspan, pinit)
+dudt!(u, p, t) = dudt2(u, p)
+u0 = rand(2)
+prob_neuralode = ODEProblem(dudt!, u0, tspan, initial_params(dudt2))
+sol_node = solve(prob, Tsit5(), saveat = tsteps)
 
 function predict_neuralode(p)
-  tmp_prob = remake(prob,p=p)
-  Array(solve(tmp_prob,Tsit5(),saveat=tsteps))
+  tmp_prob = remake(prob, p = p)
+  Array(solve(tmp_prob, Tsit5(), saveat = tsteps))
 end
 
 function loss_neuralode(p)
@@ -286,13 +226,7 @@ callback = function (p, l, pred; doplot = true)
   return false
 end
 
-result_neuralode = DiffEqFlux.sciml_train(loss_neuralode, pinit,
-                                          ADAM(0.05), cb = callback,
-                                          maxiters = 300)
-
-result_neuralode2 = DiffEqFlux.sciml_train(loss_neuralode,
-                                           result_neuralode.minimizer,
-                                           LBFGS(),
-                                           cb = callback,
-                                           allow_f_increases = false)
+result_neuralode = DiffEqFlux.sciml_train(loss_neuralode, prob_neuralode.p, cb = callback)
 ```
+
+![neural ode result](https://user-images.githubusercontent.com/1814174/122685787-8c7d5880-d1db-11eb-8655-e2a733d8a3b2.png)

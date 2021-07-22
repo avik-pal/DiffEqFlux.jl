@@ -1,14 +1,21 @@
 module DiffEqFlux
 
-using GalacticOptim, DiffEqBase, DiffResults, DiffEqSensitivity, Distributions, ForwardDiff,
-      Flux, Requires, Adapt, LinearAlgebra, RecursiveArrayTools,
-      StaticArrays, Base.Iterators, Printf, Zygote
+using GalacticOptim, DataInterpolations, DiffEqBase, DiffResults,
+      Distributions, ForwardDiff, Requires, Adapt, LinearAlgebra,
+      RecursiveArrayTools, StaticArrays, Base.Iterators, Printf
 
-using DistributionsAD
+import DistributionsAD
+
+using Reexport
+@reexport using Flux
+@reexport using Optim
+@reexport using Zygote
+@reexport using DiffEqSensitivity
+
 import ProgressLogging, ZygoteRules
 import ConsoleProgressMonitor, TerminalLoggers, LoggingExtras
-
 import Logging
+import Cassette
 
 gpu_or_cpu(x) = Array
 
@@ -82,6 +89,11 @@ include("tensor_product_basis.jl")
 include("tensor_product_layer.jl")
 include("collocation.jl")
 include("hnn.jl")
+include("multiple_shooting.jl")
+      
+Flux.device(::FastLayer) = @warn "device(f::FastLayer) is a no-op: to move FastChain computations to a GPU, apply gpu(x) to the weight vector"
+Flux.gpu(::FastLayer) = @warn "device(f::FastLayer) is a no-op: to move FastChain computations to a GPU, apply gpu(x) to the weight vector"
+Flux.cpu(::FastLayer) = @warn "device(f::FastLayer) is a no-op: to move FastChain computations to a CPU, apply cpu(x) to the weight vector"
 
 export diffeq_fd, diffeq_rd, diffeq_adjoint
 export DeterministicCNF, FFJORD, NeuralODE, NeuralDSDE, NeuralSDE, NeuralCDDE, NeuralDAE, NeuralODEMM, TensorLayer, AugmentedNDELayer, SplineLayer, NeuralHamiltonianDE
@@ -95,5 +107,7 @@ export EpanechnikovKernel, UniformKernel, TriangularKernel, QuarticKernel
 export TriweightKernel, TricubeKernel, GaussianKernel, CosineKernel
 export LogisticKernel, SigmoidKernel, SilvermanKernel
 export collocate_data
+
+export multiple_shoot
 
 end

@@ -1,11 +1,11 @@
-# Partial Differential Equation Constrained Optimization
+# Partial Differential Equation (PDE) Constrained Optimization
 
-This example uses a prediction model to optimize the one-dimensional Burgers' Equation.
+This example uses a prediction model to optimize the one-dimensional Heat Equation.
 (Step-by-step description below)
 
 ```julia
 using DelimitedFiles,Plots
-using DiffEqSensitivity, OrdinaryDiffEq, Zygote, Flux, DiffEqFlux, Optim
+using DifferentialEquations, DiffEqFlux
 
 # Problem setup parameters:
 Lx = 10.0
@@ -40,7 +40,7 @@ function d2dx(u,dx)
 end
 
 ## ODE description of the Physics:
-function burgers(u,p,t)
+function heat(u,p,t)
     # Model parameters
     a0, a1 = p
     dx,Nx = xtrs #[1.0,3.0,0.125,100]
@@ -48,7 +48,7 @@ function burgers(u,p,t)
 end
 
 # Testing Solver on linear PDE
-prob = ODEProblem(burgers,u0,tspan,p)
+prob = ODEProblem(heat,u0,tspan,p)
 sol = solve(prob,Tsit5(), dt=dt,saveat=t);
 
 plot(x, sol.u[1], lw=3, label="t0", size=(800,500))
@@ -87,11 +87,8 @@ cb(ps,loss(ps)...) # Testing callback function
 scatter(sol[:,end], label="Truth", size=(800,500))
 plot!(PRED[end][:,end], lw=2, label="Prediction")
 
-res = DiffEqFlux.sciml_train(loss, ps, ADAM(0.01), cb = cb, maxiters = 100)  # Let check gradient propagation
-ps = res.minimizer
-res = DiffEqFlux.sciml_train(loss, ps, BFGS(), cb = cb, maxiters = 100,
-                             allow_f_increases = false)  # Let check gradient propagation
-@show res.minimizer # returns [0.999999999999975, 1.0000000000000213]
+res = DiffEqFlux.sciml_train(loss, ps, cb = cb)
+@show res.u # returns [0.999999999613485, 0.9999999991343996]
 ```
 
 ## Step-by-step Description
@@ -100,7 +97,7 @@ res = DiffEqFlux.sciml_train(loss, ps, BFGS(), cb = cb, maxiters = 100,
 
 ```julia
 using DelimitedFiles,Plots
-using DiffEqSensitivity, OrdinaryDiffEq, Zygote, Flux, DiffEqFlux, Optim
+using DifferentialEquations, DiffEqFlux
 ```
 
 ### Parameters
@@ -135,7 +132,7 @@ In plain terms, the quantities that were defined are:
 - `u0` = initial condition
 - `p` = true solution
 - `xtrs` = convenient grouping of `dx` and `Nx` into Array
-- `dt` = time distane between two points
+- `dt` = time distance between two points
 - `t` (`t0` to `tMax`) spans the specified time frame
 - `tspan` = span of `t`
 
@@ -162,13 +159,13 @@ function d2dx(u,dx)
 end
 ```
 
-### Burgers' Differential Equation
+### Heat Differential Equation
 
 Next, we setup our desired set of equations in order to define our problem.
 
 ```julia
 ## ODE description of the Physics:
-function burgers(u,p,t)
+function heat(u,p,t)
     # Model parameters
     a0, a1 = p
     dx,Nx = xtrs #[1.0,3.0,0.125,100]
@@ -183,7 +180,7 @@ will compare to further on.
 
 ```julia
 # Testing Solver on linear PDE
-prob = ODEProblem(burgers,u0,tspan,p)
+prob = ODEProblem(heat,u0,tspan,p)
 sol = solve(prob,Tsit5(), dt=dt,saveat=t);
 
 plot(x, sol.u[1], lw=3, label="t0", size=(800,500))
@@ -268,16 +265,13 @@ plot!(PRED[end][:,end], lw=2, label="Prediction")
 
 ### Train
 
-The parameters are trained using `sciml_train` and adjoint sensitivities. The resulting
-best parameters are stored in `res` and `res.minimizer` returns the parameters that
-minimizes the cost function.
+The parameters are trained using `sciml_train` and adjoint sensitivities.
+The resulting best parameters are stored in `res` and `res.u` returns the
+parameters that minimizes the cost function.
 
 ```julia
-res = DiffEqFlux.sciml_train(loss, ps, ADAM(0.01), cb = cb, maxiters = 100)  # Let check gradient propagation
-ps = res.minimizer
-res = DiffEqFlux.sciml_train(loss, ps, BFGS(), cb = cb, maxiters = 100,
-                             allow_f_increases = false)  # Let check gradient propagation
-@show res.minimizer # returns [0.999999999999975, 1.0000000000000213]
+res = DiffEqFlux.sciml_train(loss, ps, cb = cb)
+@show res.u # returns [0.999999999613485, 0.9999999991343996]
 ```
 
 We successfully predict the final `ps` to be equal to **[0.999999999999975,
@@ -394,7 +388,7 @@ We successfully predict the final `ps` to be equal to **[0.999999999999975,
 4.933077457357198e-7
 8.157805551380282e-14
 1.6648677430325974e-16
-res.minimizer = [0.999999999999975, 1.0000000000000213]
+res.u = [0.999999999999975, 1.0000000000000213]
 2-element Array{Float64,1}:
  0.999999999999975
  1.0000000000000213

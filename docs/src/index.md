@@ -1,19 +1,30 @@
 # DiffEqFlux: Generalized Physics-Informed and Scientific Machine Learning (SciML)
 
-DiffEqFlux.jl is not just for neural ordinary differential equations.
+DiffEqFlux.jl is a parameter estimation system for the SciML ecosystem. It is
+a high level interface that pulls together all of the tools with heuristics
+and helper functions to make solving inverse problems and inferring models
+as easy as possible without losing efficiency.
+
 DiffEqFlux.jl is for universal differential equations, where these can include
 delays, physical constraints, stochasticity, events, and all other kinds of
 interesting behavior that shows up in scientific simulations. Neural networks can
 be all or part of the model. They can be around the differential equation,
 in the cost function, or inside of the differential equation. Neural networks
 representing unknown portions of the model or functions can go anywhere you
-have uncertainty in the form of the scientific simulator. For an overview of the
-topic with applications, consult the paper [Universal Differential Equations for
-Scientific Machine Learning](https://arxiv.org/abs/2001.04385).
+have uncertainty in the form of the scientific simulator. Forward sensitivity
+and adjoint equations are automatically generated with checkpointing and
+stabilization to ensure it works for large stiff equations, while specializations
+on static objects allows for high efficiency on small equations. For an overview
+of the topic with applications, consult the paper
+[Universal Differential Equations for Scientific Machine
+Learning](https://arxiv.org/abs/2001.04385).
 
-As such, it is the first package to support and demonstrate:
+You can efficiently use the package for:
 
-- Stiff universal ordinary differential equations (universal ODEs)
+- Parameter estimation of scientific models (ODEs, SDEs, DDEs, DAEs, etc.)
+- Neural ODEs, Neural SDE, etc.
+- Nonlinear optimal control, including training neural controllers
+- (Stiff) universal ordinary differential equations (universal ODEs)
 - Universal stochastic differential equations (universal SDEs)
 - Universal delay differential equations (universal DDEs)
 - Universal partial differential equations (universal PDEs)
@@ -27,13 +38,18 @@ updated for changes to the libraries). Additional demonstrations, like neural
 PDEs and neural jump SDEs, can be found [at this blog
 post](http://www.stochasticlifestyle.com/neural-jump-sdes-jump-diffusions-and-neural-pdes/)
 (among many others!). All of these features are only part of the advantage, as this library
-[routinely benchmarks orders of magnitude faster than competing libraries like torchdiffeq](@ref Benchmarks)
+[routinely benchmarks orders of magnitude faster than competing libraries like torchdiffeq](@ref Benchmarks).
+Use with GPUs is highly optimized by
+[recompiling the solvers to GPUs to remove all CPU-GPU data transfers](https://www.stochasticlifestyle.com/solving-systems-stochastic-pdes-using-gpus-julia/),
+while use with CPUs uses specialized kernels for accelerating differential equation solves.
 
 Many different training techniques are supported by this package, including:
 
 - Optimize-then-discretize (backsolve adjoints, checkpointed adjoints, quadrature adjoints)
 - Discretize-then-optimize (forward and reverse mode discrete sensitivity analysis)
-  - This is a generalization of [ANODE](https://arxiv.org/pdf/1902.10298.pdf) and [ANODEv2](https://arxiv.org/pdf/1906.04596.pdf) to all [DifferentialEquations.jl ODE solvers](https://diffeq.sciml.ai/latest/solvers/ode_solve/)
+  - This is a generalization of [ANODE](https://arxiv.org/pdf/1902.10298.pdf) and
+    [ANODEv2](https://arxiv.org/pdf/1906.04596.pdf) to all
+    [DifferentialEquations.jl ODE solvers](https://diffeq.sciml.ai/latest/solvers/ode_solve/)
 - Hybrid approaches (adaptive time stepping + AD for adaptive discretize-then-optimize)
 - Collocation approaches (two-stage methods, multiple shooting, etc.)
 - O(1) memory backprop of ODEs via BacksolveAdjoint, and Virtual Brownian Trees for O(1) backprop of SDEs
@@ -87,8 +103,8 @@ Thus, what DiffEqFlux.jl provides is:
 - Pre-built layer functions for common use cases, like neural ODEs
 - Specialized layer functions (`FastDense`) to improve neural differential equation
   training performance
-- A specialized optimization function `sciml_train` with a training loop that
-  allows non-machine learning libraries to be easily utilized
+- Compatibility with a multifunctional optimization package [GalacticOptim.jl](https://github.com/SciML/GalacticOptim.jl) with a training loop that allows non-machine learning
+  libraries to be easily utilized
 
 ## Applications
 
@@ -105,16 +121,16 @@ methodology, and are showcased in tutorials and layer functions:
 - Augmented Neural ODEs
 - Graph Neural ODEs
 - Hamiltonian Neural Networks (with specialized second order and symplectic integrators)
-- Legrangian Neural Networks
+- Lagrangian Neural Networks
 - Continuous Normalizing Flows (CNF) and FFJORD
-- Galerkin Nerual ODEs
+- Galerkin Neural ODEs
 
 ## Modularity and Composability
 
-Note that DiffEqFlux.jl purely built on composable and modular infrustructure. In fact, 
-DiffEqFlux.jl's functions are not even directly required for performing many of these operations! 
-DiffEqFlux provides high level helper functions and documentation for the user, but the 
-code generation stack is modular and composes in many different ways. For example, one can 
+Note that DiffEqFlux.jl purely built on composable and modular infrastructure. In fact,
+DiffEqFlux.jl's functions are not even directly required for performing many of these operations!
+DiffEqFlux provides high level helper functions and documentation for the user, but the
+code generation stack is modular and composes in many different ways. For example, one can
 use and swap out the ODE solver between any common interface compatible library, like:
 
 - Sundials.jl
@@ -126,7 +142,7 @@ use and swap out the ODE solver between any common interface compatible library,
 
 In addition, due to the composability of the system, none of the components are directly
 tied to the Flux.jl machine learning framework. For example, you can [use DiffEqFlux.jl
-to generate TensorFlow graphs and train the nueral network with TensorFlow.jl](https://youtu.be/n2MwJ1guGVQ?t=284),
+to generate TensorFlow graphs and train the neural network with TensorFlow.jl](https://youtu.be/n2MwJ1guGVQ?t=284),
 [utilize PyTorch arrays via Torch.jl](https://github.com/FluxML/Torch.jl), and more all with
 single line code changes by utilizing the underlying code generation. The tutorials shown here
 are thus mostly a guide on how to use the ecosystem as a whole, only showing a small snippet

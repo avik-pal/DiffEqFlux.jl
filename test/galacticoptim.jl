@@ -1,4 +1,4 @@
-using DiffEqFlux, GalacticOptim,  DiffEqSensitivity, Flux, OrdinaryDiffEq, Zygote, NLopt, Test #using Plots
+using DiffEqFlux, GalacticOptim,  DiffEqSensitivity, OrdinaryDiffEq, Zygote, NLopt, Test #using Plots
 
 function lotka_volterra(du,u,p,t)
   x, y = u
@@ -113,7 +113,7 @@ res = GalacticOptim.solve(optprob, Fminbox(BFGS(initial_stepnorm = 0.01)), cb = 
 @test 10res.minimum < loss1
 
 opt = Opt(:LD_MMA, 4)
-res = GalacticOptim.solve(optprob, opt)
+res = GalacticOptim.solve(optprob, opt, maxiters = 100)
 @test 10res.minimum < loss1
 
 function lotka_volterra2(u,p,t)
@@ -127,7 +127,7 @@ p = [2.2, 1.0, 2.0, 0.4]
 u0 = [1.0,1.0]
 prob = ODEProblem{false}(lotka_volterra2,u0,(0.0,10.0),p)
 function predict_adjoint(p)
-    vec(Array(solve(prob,Tsit5(),p=p,saveat=0.1,reltol=1e-4)))
+    vec(Array(solve(prob,Tsit5(),p=p,saveat=0.1,reltol=1e-4,sensealg=InterpolatingAdjoint())))
 end
 loss_reduction(sol) = sum(abs2,x-1 for x in vec(sol))
 loss_adjoint(p) = loss_reduction(predict_adjoint(p))

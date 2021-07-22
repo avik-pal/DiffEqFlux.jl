@@ -15,7 +15,7 @@ is a stochastic process. Each time we solve this equation we get a different
 solution, so we need a sensible data source.
 
 ```julia
-using DiffEqFlux, DifferentialEquations, Plots, Flux, Optim, DiffEqSensitivity
+using DiffEqFlux, DifferentialEquations, Plots
 function lotka_volterra!(du,u,p,t)
   x,y = u
   α,β,γ,δ = p
@@ -61,7 +61,7 @@ then plot the evolution of the means and variances to verify the fit. For exampl
 function loss(p)
   tmp_prob = remake(prob,p=p)
   ensembleprob = EnsembleProblem(tmp_prob)
-  tmp_sol = solve(ensembleprob,SOSRI(),saveat=0.1,trajectories=1000,sensealg=ForwardDiffSensitivity())
+  tmp_sol = solve(ensembleprob,SOSRI(),saveat=0.1,trajectories=1000)
   arrsol = Array(tmp_sol)
   sum(abs2,truemean - mean(arrsol,dims=3)) + 0.1sum(abs2,truevar - var(arrsol,dims=3)),arrsol
 end
@@ -109,7 +109,7 @@ approximately 4 minutes.
 
 ## Example 2: Fitting SDEs via Bayesian Quasi-Likelihood Approaches
 
-An inference method which can be much more efficient in many cases is the quasi-likelihood appraoch.
+An inference method which can be much more efficient in many cases is the quasi-likelihood approach.
 This approach matches the random likelihood of the SDE output with the random sampling of a Bayesian
 inference problem to more efficiently directly estimate the posterior distribution. For more information,
 please see [the Turing.jl Bayesian Differential Equations tutorial](https://github.com/TuringLang/TuringTutorials/blob/master/10_diffeq.ipynb)
@@ -120,7 +120,7 @@ In this example, we will find the parameters of the SDE that force the
 solution to be close to the constant 1.
 
 ```julia
-using DifferentialEquations, Flux, Optim, DiffEqFlux, DiffEqSensitivity, Plots
+using DifferentialEquations, DiffEqFlux, Plots
 
 function lotka_volterra!(du, u, p, t)
   x, y = u
