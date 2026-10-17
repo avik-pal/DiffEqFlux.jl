@@ -7,16 +7,16 @@
 [![Build Status](https://github.com/SciML/DiffEqFlux.jl/workflows/CI/badge.svg)](https://github.com/SciML/DiffEqFlux.jl/actions?query=workflow%3ACI)
 [![Build status](https://badge.buildkite.com/a1fecf87b085b452fe0f3d3968ddacb5c1d5570806834e1d52.svg)](https://buildkite.com/julialang/diffeqflux-dot-jl)
 
-[![ColPrac: Contributor's Guide on Collaborative Practices for Community Packages](https://img.shields.io/badge/ColPrac-Contributor's%20Guide-blueviolet)](https://github.com/SciML/ColPrac)
+[![ColPrac: Contributor's Guide on Collaborative Practices for Community Packages](https://img.shields.io/badge/ColPrac-Contributor%27s%20Guide-blueviolet)](https://github.com/SciML/ColPrac)
 [![SciML Code Style](https://img.shields.io/static/v1?label=code%20style&message=SciML&color=9558b2&labelColor=389826)](https://github.com/SciML/SciMLStyle)
 
-DiffEqFlux.jl fuses the world of differential equations with machine learning
+DiffEq(For)Lux.jl (aka DiffEqFlux.jl) fuses the world of differential equations with machine learning
 by helping users put diffeq solvers into neural networks. This package utilizes
-[DifferentialEquations.jl](https://docs.sciml.ai/DiffEqDocs/stable/),
-[Flux.jl](https://docs.sciml.ai/Flux/stable/) and [Lux.jl](https://lux.csail.mit.edu/v0.5.5/api/)  as its building blocks to support research in
-[Scientific Machine Learning](https://www.stochasticlifestyle.com/the-essential-tools-of-scientific-machine-learning-scientific-ml/),
-specifically neural differential equations and universal differential equations,
-to add physical information into traditional machine learning.
+[DifferentialEquations.jl](https://docs.sciml.ai/DiffEqDocs/stable/), and [Lux.jl](https://lux.csail.mit.edu/)  as its building blocks to support research in
+[Scientific Machine Learning](https://www.stochasticlifestyle.com/the-essential-tools-of-scientific-machine-learning-scientific-ml/), specifically neural differential equations to add physical information into traditional machine learning.
+
+> [!NOTE]
+> We maintain backwards compatibility with [Flux.jl](https://fluxml.ai/Flux.jl/stable/) via [FromFluxAdaptor()](https://lux.csail.mit.edu/stable/api/Lux/interop#Lux.FromFluxAdaptor)
 
 ## Tutorials and Documentation
 
@@ -27,25 +27,20 @@ the documentation, which contains the unreleased features.
 
 ## Problem Domain
 
-DiffEqFlux.jl is not just for neural ordinary differential equations.
-DiffEqFlux.jl is for universal differential equations, where these can include
-delays, physical constraints, stochasticity, events, and all other kinds of
-interesting behavior that shows up in scientific simulations. Neural networks can
-be all or part of the model. They can be around the differential equation,
-in the cost function, or inside of the differential equation. Neural networks
-representing unknown portions of the model or functions can go anywhere you
-have uncertainty in the form of the scientific simulator. For an overview of the
-topic with applications, consult the paper [Universal Differential Equations for
-Scientific Machine Learning](https://arxiv.org/abs/2001.04385).
+DiffEqFlux.jl is for implicit layer machine learning.
+DiffEqFlux.jl provides architectures which match the interfaces of machine learning libraries such as Flux.jl and Lux.jl to make it easy to build continuous-time machine learning layers into larger machine learning applications.
 
-As such, it is the first package to support and demonstrate:
+The following layer functions exist:
 
-- Stiff and non-stiff universal ordinary differential equations (universal ODEs)
-- Universal stochastic differential equations (universal SDEs)
-- Universal delay differential equations (universal DDEs)
-- Universal partial differential equations (universal PDEs)
-- Universal jump stochastic differential equations (universal jump diffusions)
-- Hybrid universal differential equations (universal DEs with event handling)
+  - Neural Ordinary Differential Equations (Neural ODEs)
+  - Collocation-Based Neural ODEs (Neural ODEs without a solver, by far the fastest way!)
+  - Multiple Shooting Neural Ordinary Differential Equations
+  - Neural Stochastic Differential Equations (Neural SDEs)
+  - Neural Differential-Algebraic Equations (Neural DAEs)
+  - Neural Delay Differential Equations (Neural DDEs)
+  - Augmented Neural ODEs
+  - Hamiltonian Neural Networks (with specialized second order and symplectic integrators)
+  - Continuous Normalizing Flows (CNF) and FFJORD
 
 with high order, adaptive, implicit, GPU-accelerated, Newton-Krylov, etc.
 methods. For examples, please refer to
@@ -58,10 +53,29 @@ PDEs and neural jump SDEs, can be found
 Do not limit yourself to the current neuralization. With this package, you can
 explore various ways to integrate the two methodologies:
 
-- Neural networks can be defined where the “activations” are nonlinear functions
-  described by differential equations
-- Neural networks can be defined where some layers are ODE solves
-- ODEs can be defined where some terms are neural networks
-- Cost functions on ODEs can define neural networks
+  - Neural networks can be defined where the “activations” are nonlinear functions
+    described by differential equations
+  - Neural networks can be defined where some layers are ODE solves
+  - ODEs can be defined where some terms are neural networks
+  - Cost functions on ODEs can define neural networks
 
 ![Flux ODE Training Animation](https://user-images.githubusercontent.com/1814174/88589293-e8207f80-d026-11ea-86e2-8a3feb8252ca.gif)
+
+## Breaking Changes
+
+### v4
+
+  - `TensorLayer` has been removed, use `Boltz.Layers.TensorProductLayer` instead.
+  - Basis functions in DiffEqFlux have been removed in favor of `Boltz.Basis` module.
+  - `SplineLayer` has been removed, use `Boltz.Layers.SplineLayer` instead.
+  - `NeuralHamiltonianDE` has been removed, use `NeuralODE` with `Layers.HamiltonianNN` instead.
+  - `HamiltonianNN` has been removed in favor of `Layers.HamiltonianNN`.
+  - `Lux` and `Boltz` are updated to v1.
+
+### v3
+
+  - Flux dependency is dropped. If a non Lux `AbstractLuxLayer` is passed we try to automatically convert it to a Lux model with `FromFluxAdaptor()(model)`.
+  - `Flux` is no longer re-exported from `DiffEqFlux`. Instead we reexport `Lux`.
+  - `NeuralDAE` now allows an optional `du0` as input.
+  - `TensorLayer` is now a Lux Neural Network.
+  - APIs for quite a few layer constructions have changed. Please refer to the updated documentation for more details.

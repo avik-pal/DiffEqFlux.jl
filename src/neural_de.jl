@@ -1,598 +1,808 @@
-abstract type NeuralDELayer <: LuxCore.AbstractExplicitContainerLayer{(:model,)} end
-abstract type NeuralSDELayer <: LuxCore.AbstractExplicitContainerLayer{(:drift,:diffusion,)} end
-basic_tgrad(u,p,t) = zero(u)
-basic_dde_tgrad(u,h,p,t) = zero(u)
+"""
+    NeuralDELayer
+
+Abstract interface for DiffEqFlux neural differential equation layers with a single
+Lux model field.
+
+# Interface
+
+Concrete subtypes are Lux layers and are callable as:
+
+```julia
+solution, new_state = layer(x, ps, st)
+```
+
+where `x` is the initial condition or layer input, `ps` are Lux parameters, and `st`
+is Lux state. Implementations must return the SciML solution produced by `solve` and
+the updated Lux state. The wrapped model is stored in a field named `model`, matching
+the `AbstractLuxWrapperLayer{:model}` interface.
+
+# Rules
+
+  - The call must not mutate `ps`.
+  - Solver keyword arguments supplied to the constructor are forwarded to `solve`.
+  - State updates from the wrapped Lux model must be returned as the second tuple value.
+
+# Implementations
+
+[`NeuralODE`](@ref), [`NeuralCDDE`](@ref), [`NeuralDAE`](@ref), and
+[`NeuralODEMM`](@ref) implement this interface.
+"""
+abstract type NeuralDELayer <: AbstractLuxWrapperLayer{:model} end
 
 """
-Constructs a continuous-time recurrant neural network, also known as a neural
+    NeuralSDELayer
+
+Abstract interface for DiffEqFlux neural stochastic differential equation layers with
+separate drift and diffusion Lux models.
+
+# Interface
+
+Concrete subtypes are Lux container layers and are callable as:
+
+```julia
+solution, new_state = layer(x, ps, st)
+```
+
+where `ps` and `st` contain `drift` and `diffusion` fields. Implementations build an
+`SDEProblem`, call `solve`, and return the solution plus updated drift and diffusion
+states.
+
+# Rules
+
+  - `drift(x, ps.drift)` must return the deterministic drift vector.
+  - `diffusion(x, ps.diffusion)` must return the noise-rate object required by the
+    concrete layer.
+  - Solver keyword arguments supplied to the constructor are forwarded to `solve`.
+
+# Implementations
+
+[`NeuralDSDE`](@ref) implements diagonal noise. [`NeuralSDE`](@ref) implements a
+general noise-rate matrix with a fixed number of Brownian processes.
+"""
+abstract type NeuralSDELayer <: AbstractLuxContainerLayer{(:drift, :diffusion)} end
+
+basic_tgrad(u, p, t) = zero(u)
+basic_dde_tgrad(u, h, p, t) = zero(u)
+
+"""
+    NeuralODE(model, tspan, alg = nothing, args...; kwargs...)
+
+Constructs a continuous-time recurrent neural network, also known as a neural
 ordinary differential equation (neural ODE), with a fast gradient calculation
 via adjoints [1]. At a high level this corresponds to solving the forward
 differential equation, using a second differential equation that propagates the
 derivatives of the loss backwards in time.
 
+# Arguments
+
+  - `model`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines the
+    ̇x.
+  - `tspan`: The timespan to be solved on.
+  - `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
+    default algorithm from DifferentialEquations.jl.
+  - `sensealg`: The choice of differentiation algorithm used in the backpropagation.
+    Defaults to an adjoint method. See
+    the [Local Sensitivity Analysis](https://docs.sciml.ai/SciMLSensitivity/stable/)
+    documentation for more details.
+  - `kwargs`: Additional arguments splatted to the ODE solver. See the
+    [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
+    documentation for more details.
+
+# Fields
+
+  - `model`: Lux layer used as the ODE right-hand side.
+  - `tspan`: Integration time span.
+  - `args`: Positional solver arguments, usually including the ODE algorithm.
+  - `kwargs`: Keyword solver arguments forwarded to `solve`.
+
+# Returns
+
+A [`NeuralDELayer`](@ref). Calling the layer as `node(x, ps, st)` returns
+`(sol, new_state)`, where `sol` is the SciML ODE solution.
+
+# Examples
+
 ```julia
-NeuralODE(model,tspan,alg=nothing,args...;kwargs...)
+using DiffEqFlux, Lux, Random
+
+rng = Random.default_rng()
+model = Lux.Chain(Lux.Dense(2 => 8, tanh), Lux.Dense(8 => 2))
+node = NeuralODE(model, (0.0f0, 1.0f0); saveat = 0.1f0)
+ps, st = Lux.setup(rng, node)
+sol, st = node(Float32[1, 0], ps, st)
 ```
 
-Arguments:
-
-- `model`: A Flux.Chain or Lux.AbstractExplicitLayer neural network that defines the ̇x.
-- `tspan`: The timespan to be solved on.
-- `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
-  default algorithm from DifferentialEquations.jl.
-- `sensealg`: The choice of differentiation algorthm used in the backpropogation.
-  Defaults to an adjoint method. See
-  the [Local Sensitivity Analysis](https://docs.sciml.ai/DiffEqDocs/stable/analysis/sensitivity/)
-  documentation for more details.
-- `kwargs`: Additional arguments splatted to the ODE solver. See the
-  [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
-  documentation for more details.
-
-References:
+# References
 
 [1] Pontryagin, Lev Semenovich. Mathematical theory of optimal processes. CRC press, 1987.
-
 """
-struct NeuralODE{M,P,RE,T,A,K} <: NeuralDELayer
-    model::M
-    p::P
-    re::RE
-    tspan::T
-    args::A
-    kwargs::K
+@concrete struct NeuralODE <: NeuralDELayer
+    model <: AbstractLuxLayer
+    tspan
+    args
+    kwargs
 end
 
-function NeuralODE(model,tspan,args...;p = nothing,kwargs...)
-  _p,re = Flux.destructure(model)
-  if p === nothing
-      p = _p
-  end
-  NeuralODE{typeof(model),typeof(p),typeof(re),
-            typeof(tspan),typeof(args),typeof(kwargs)}(
-              model,p,re,tspan,args,kwargs)
+function NeuralODE(model, tspan, args...; kwargs...)
+    !(model isa AbstractLuxLayer) && (model = FromFluxAdaptor()(model))
+    return NeuralODE(model, tspan, args, kwargs)
 end
 
-function NeuralODE(model::LuxCore.AbstractExplicitLayer,tspan,args...;p=nothing,kwargs...)
-  re = nothing
-  NeuralODE{typeof(model),typeof(p),typeof(re),
-      typeof(tspan),typeof(args),typeof(kwargs)}(
-      model,p,re,tspan,args,kwargs)
-end
+function (n::NeuralODE)(x, p, st)
+    model = StatefulLuxLayer{fixed_state_type(n.model)}(n.model, nothing, st)
 
-@functor NeuralODE (p,)
+    dudt(u, p, t) = model(u, p)
+    ff = ODEFunction{false}(dudt; tgrad = basic_tgrad)
+    prob = ODEProblem{false}(ff, x, n.tspan, p)
 
-function (n::NeuralODE)(x,p=n.p)
-    dudt_(u,p,t) = n.re(p)(u)
-    ff = ODEFunction{false}(dudt_,tgrad=basic_tgrad)
-    prob = ODEProblem{false}(ff,x,getfield(n,:tspan),p)
-    sense = InterpolatingAdjoint(autojacvec=ZygoteVJP())
-    solve(prob,n.args...;sensealg=sense,n.kwargs...)
-end
-
-function (n::NeuralODE{M})(x,p,st) where {M<:LuxCore.AbstractExplicitLayer}
-  function dudt(u,p,t;st=st)
-    u_, st = n.model(u,p,st)
-    return u_
-  end
-
-  ff = ODEFunction{false}(dudt,tgrad=basic_tgrad)
-  prob = ODEProblem{false}(ff,x,n.tspan,p)
-  sense = InterpolatingAdjoint(autojacvec=ZygoteVJP())
-  return solve(prob,n.args...;sensealg=sense,n.kwargs...), st
+    return (
+        solve(
+            prob, n.args...;
+            sensealg = InterpolatingAdjoint(; autojacvec = ZygoteVJP()), n.kwargs...
+        ),
+        model.st,
+    )
 end
 
 """
+    NeuralDSDE(drift, diffusion, tspan, alg = nothing, args...; sensealg = TrackerAdjoint(),
+        kwargs...)
+
 Constructs a neural stochastic differential equation (neural SDE) with diagonal noise.
 
+# Arguments
+
+  - `drift`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines the
+    drift function.
+  - `diffusion`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines
+    the diffusion function. Should output a vector of the same size as the input.
+  - `tspan`: The timespan to be solved on.
+  - `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
+    default algorithm from DifferentialEquations.jl.
+  - `sensealg`: The choice of differentiation algorithm used in the backpropagation.
+  - `kwargs`: Additional arguments splatted to the ODE solver. See the
+    [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
+    documentation for more details.
+
+# Fields
+
+  - `drift`: Lux layer used as the SDE drift function.
+  - `diffusion`: Lux layer used as the diagonal diffusion function.
+  - `tspan`: Integration time span.
+  - `args`: Positional solver arguments, usually including the SDE algorithm.
+  - `kwargs`: Keyword solver arguments forwarded to `solve`.
+
+# Returns
+
+A [`NeuralSDELayer`](@ref). Calling the layer as `nsde(x, ps, st)` returns
+`(sol, new_state)`, where `sol` is the SciML SDE solution.
+
+# Examples
+
 ```julia
-NeuralDSDE(drift,diffusion,tspan,alg=nothing,args...;
-           sensealg=TrackerAdjoint(),kwargs...)
+using DiffEqFlux, Lux, Random
+
+rng = Random.default_rng()
+drift = Lux.Dense(2 => 2)
+diffusion = Lux.Dense(2 => 2)
+layer = NeuralDSDE(drift, diffusion, (0.0f0, 1.0f0))
+ps, st = Lux.setup(rng, layer)
+sol, st = layer(Float32[1, 0], ps, st)
 ```
-
-Arguments:
-
-- `drift`: A Flux.Chain or Lux.AbstractExplicitLayer neural network that defines the drift function.
-- `diffusion`: A Flux.Chain or Lux.AbstractExplicitLayer neural network that defines the diffusion function.
-  Should output a vector of the same size as the input.
-- `tspan`: The timespan to be solved on.
-- `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
-  default algorithm from DifferentialEquations.jl.
-- `sensealg`: The choice of differentiation algorthm used in the backpropogation.
-  Defaults to using reverse-mode automatic differentiation via Tracker.jl
-- `kwargs`: Additional arguments splatted to the ODE solver. See the
-  [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
-  documentation for more details.
-
 """
-struct NeuralDSDE{M,P,RE,M2,RE2,T,A,K} <: NeuralSDELayer
-    p::P
-    len::Int
-    drift::M
-    re1::RE
-    diffusion::M2
-    re2::RE2
-    tspan::T
-    args::A
-    kwargs::K
+@concrete struct NeuralDSDE <: NeuralSDELayer
+    drift <: AbstractLuxLayer
+    diffusion <: AbstractLuxLayer
+    tspan
+    args
+    kwargs
 end
 
-function NeuralDSDE(drift,diffusion,tspan,args...;p = nothing, kwargs...)
-  p1,re1 = Flux.destructure(drift)
-  p2,re2 = Flux.destructure(diffusion)
-  if p === nothing
-      p = [p1;p2]
-  end
-  NeuralDSDE{typeof(drift),typeof(p),typeof(re1),typeof(diffusion),typeof(re2),
-      typeof(tspan),typeof(args),typeof(kwargs)}(p,
-      length(p1),drift,re1,diffusion,re2,tspan,args,kwargs)
+function NeuralDSDE(drift, diffusion, tspan, args...; kwargs...)
+    !(drift isa AbstractLuxLayer) && (drift = FromFluxAdaptor()(drift))
+    !(diffusion isa AbstractLuxLayer) && (diffusion = FromFluxAdaptor()(diffusion))
+    return NeuralDSDE(drift, diffusion, tspan, args, kwargs)
 end
 
-function NeuralDSDE(drift::LuxCore.AbstractExplicitLayer,diffusion::LuxCore.AbstractExplicitLayer,tspan,args...;
-                    p1 =nothing,
-                    p = nothing, kwargs...)
-  re1 = nothing
-  re2 = nothing
-  NeuralDSDE{typeof(drift),typeof(p),typeof(re1),typeof(diffusion),typeof(re2),
-      typeof(tspan),typeof(args),typeof(kwargs)}(p,
-      Int(1),drift,re1,diffusion,re2,tspan,args,kwargs)
-end
+function (n::NeuralDSDE)(x, p, st)
+    drift = StatefulLuxLayer{fixed_state_type(n.drift)}(n.drift, nothing, st.drift)
+    diffusion = StatefulLuxLayer{fixed_state_type(n.diffusion)}(
+        n.diffusion, nothing, st.diffusion
+    )
 
-@functor NeuralDSDE (p,)
+    dudt(u, p, t) = drift(u, p.drift)
+    g(u, p, t) = diffusion(u, p.diffusion)
 
-function (n::NeuralDSDE)(x,p=n.p)
-    dudt_(u,p,t) = n.re1(p[1:n.len])(u)
-    g(u,p,t) = n.re2(p[(n.len+1):end])(u)
-    ff = SDEFunction{false}(dudt_,g,tgrad=basic_tgrad)
-    prob = SDEProblem{false}(ff,g,x,n.tspan,p)
-    solve(prob,n.args...;sensealg=TrackerAdjoint(),n.kwargs...)
-end
-
-function (n::NeuralDSDE{M})(x,p,st) where {M<:LuxCore.AbstractExplicitLayer}
-    st1 = st.drift
-    st2 = st.diffusion
-    function dudt_(u,p,t;st=st1)
-      u_, st = n.drift(u,p.drift,st)
-      return u_
-    end
-    function g(u,p,t;st=st2)
-      u_, st = n.diffusion(u,p.diffusion,st)
-      return u_
-    end
-
-    ff = SDEFunction{false}(dudt_,g,tgrad=basic_tgrad)
-    prob = SDEProblem{false}(ff,g,x,n.tspan,p)
-    return solve(prob,n.args...;sensealg=BacksolveAdjoint(),n.kwargs...), (drift = st1, diffusion = st2)
+    ff = SDEFunction{false}(dudt, g; tgrad = basic_tgrad)
+    prob = SDEProblem{false}(ff, g, x, n.tspan, p)
+    return (
+        solve(prob, n.args...; u0 = x, p, sensealg = TrackerAdjoint(), n.kwargs...),
+        (; drift = drift.st, diffusion = diffusion.st),
+    )
 end
 
 """
+    NeuralSDE(drift, diffusion, tspan, nbrown, alg = nothing, args...;
+        sensealg=TrackerAdjoint(), kwargs...)
+
 Constructs a neural stochastic differential equation (neural SDE).
 
+# Arguments
+
+  - `drift`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines the
+    drift function.
+  - `diffusion`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines
+    the diffusion function. Should output a matrix that is `nbrown x size(x, 1)`.
+  - `tspan`: The timespan to be solved on.
+  - `nbrown`: The number of Brownian processes.
+  - `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
+    default algorithm from DifferentialEquations.jl.
+  - `sensealg`: The choice of differentiation algorithm used in the backpropagation.
+  - `kwargs`: Additional arguments splatted to the ODE solver. See the
+    [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
+    documentation for more details.
+
+# Fields
+
+  - `drift`: Lux layer used as the SDE drift function.
+  - `diffusion`: Lux layer used as the full noise-rate function.
+  - `tspan`: Integration time span.
+  - `nbrown`: Number of Brownian processes.
+  - `args`: Positional solver arguments, usually including the SDE algorithm.
+  - `kwargs`: Keyword solver arguments forwarded to `solve`.
+
+# Returns
+
+A [`NeuralSDELayer`](@ref). Calling the layer as `nsde(x, ps, st)` returns
+`(sol, new_state)`, where `sol` is the SciML SDE solution.
+
+# Examples
+
 ```julia
-NeuralSDE(drift,diffusion,tspan,nbrown,alg=nothing,args...;
-          sensealg=TrackerAdjoint(),kwargs...)
+using DiffEqFlux, Lux, Random
+
+rng = Random.default_rng()
+drift = Lux.Dense(2 => 2)
+diffusion = Lux.Dense(2 => 4)
+layer = NeuralSDE(drift, diffusion, (0.0f0, 1.0f0), 2)
+ps, st = Lux.setup(rng, layer)
+sol, st = layer(Float32[1, 0], ps, st)
 ```
-
-Arguments:
-
-- `drift`: A Flux.Chain or Lux.AbstractExplicitLayer neural network that defines the drift function.
-- `diffusion`: A Flux.Chain or Lux.AbstractExplicitLayer neural network that defines the diffusion function.
-  Should output a matrix that is nbrown x size(x,1).
-- `tspan`: The timespan to be solved on.
-- `nbrown`: The number of Brownian processes
-- `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
-  default algorithm from DifferentialEquations.jl.
-- `sensealg`: The choice of differentiation algorthm used in the backpropogation.
-  Defaults to using reverse-mode automatic differentiation via Tracker.jl
-- `kwargs`: Additional arguments splatted to the ODE solver. See the
-  [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
-  documentation for more details.
-
 """
-struct NeuralSDE{P,M,RE,M2,RE2,T,A,K} <: NeuralSDELayer
-    p::P
-    len::Int
-    drift::M
-    re1::RE
-    diffusion::M2
-    re2::RE2
-    tspan::T
+@concrete struct NeuralSDE <: NeuralSDELayer
+    drift <: AbstractLuxLayer
+    diffusion <: AbstractLuxLayer
+    tspan
     nbrown::Int
-    args::A
-    kwargs::K
+    args
+    kwargs
 end
 
-function NeuralSDE(drift,diffusion,tspan,nbrown,args...;p=nothing,kwargs...)
-  p1,re1 = Flux.destructure(drift)
-  p2,re2 = Flux.destructure(diffusion)
-  if p === nothing
-      p = [p1;p2]
-  end
-  NeuralSDE{typeof(p),typeof(drift),typeof(re1),typeof(diffusion),typeof(re2),
-      typeof(tspan),typeof(args),typeof(kwargs)}(
-      p,length(p1),drift,re1,diffusion,re2,tspan,nbrown,args,kwargs)
+function NeuralSDE(drift, diffusion, tspan, nbrown, args...; kwargs...)
+    !(drift isa AbstractLuxLayer) && (drift = FromFluxAdaptor()(drift))
+    !(diffusion isa AbstractLuxLayer) && (diffusion = FromFluxAdaptor()(diffusion))
+    return NeuralSDE(drift, diffusion, tspan, nbrown, args, kwargs)
 end
 
-function NeuralSDE(drift::LuxCore.AbstractExplicitLayer, diffusion::LuxCore.AbstractExplicitLayer,tspan,nbrown,args...;
-                   p1 = nothing, p = nothing, kwargs...)
-  re1 = nothing
-  re2 = nothing
-  NeuralSDE{typeof(p),typeof(drift),typeof(re1),typeof(diffusion),typeof(re2),
-      typeof(tspan),typeof(args),typeof(kwargs)}(
-      p,Int(1),drift,re1,diffusion,re2,tspan,nbrown,args,kwargs)
-end
+function (n::NeuralSDE)(x, p, st)
+    drift = StatefulLuxLayer{fixed_state_type(n.drift)}(n.drift, p.drift, st.drift)
+    diffusion = StatefulLuxLayer{fixed_state_type(n.diffusion)}(
+        n.diffusion, p.diffusion, st.diffusion
+    )
 
-@functor NeuralSDE (p,)
+    dudt(u, p, t) = drift(u, p.drift)
+    g(u, p, t) = diffusion(u, p.diffusion)
 
-function (n::NeuralSDE)(x,p=n.p)
-    dudt_(u,p,t) = n.re1(p[1:n.len])(u)
-    g(u,p,t) = n.re2(p[(n.len+1):end])(u)
-    ff = SDEFunction{false}(dudt_,g,tgrad=basic_tgrad)
-    prob = SDEProblem{false}(ff,g,x,n.tspan,p,noise_rate_prototype=zeros(Float32,length(x),n.nbrown))
-    solve(prob,n.args...;sensealg=TrackerAdjoint(),n.kwargs...)
-end
+    noise_rate_prototype = CRC.@ignore_derivatives fill!(similar(x, length(x), n.nbrown), 0)
 
-function (n::NeuralSDE{P,M})(x,p,st) where {P,M<:LuxCore.AbstractExplicitLayer}
-    st1 = st.drift
-    st2 = st.diffusion
-    function dudt_(u,p,t;st=st1)
-        u_, st = n.drift(u,p.drift,st)
-        return u_
-    end
-    function g(u,p,t;st=st2)
-        u_, st = n.diffusion(u,p.diffusion,st)
-        return u_
-    end
-
-    ff = SDEFunction{false}(dudt_,g,tgrad=basic_tgrad)
-    prob = SDEProblem{false}(ff,g,x,n.tspan,p,noise_rate_prototype=zeros(Float32,length(x),n.nbrown))
-    return solve(prob,n.args...;sensealg=BacksolveAdjoint(),n.kwargs...), (drift = st1, diffusion = st2)
+    ff = SDEFunction{false}(dudt, g; tgrad = basic_tgrad)
+    prob = SDEProblem{false}(ff, g, x, n.tspan, p; noise_rate_prototype)
+    return (
+        solve(prob, n.args...; u0 = x, p, sensealg = TrackerAdjoint(), n.kwargs...),
+        (; drift = drift.st, diffusion = diffusion.st),
+    )
 end
 
 """
-Constructs a neural delay differential equation (neural DDE) with constant
-delays.
+    NeuralCDDE(model, tspan, hist, lags, alg = nothing, args...;
+        sensealg = TrackerAdjoint(), kwargs...)
+
+Constructs a neural delay differential equation (neural DDE) with constant delays.
+
+# Arguments
+
+  - `model`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines the
+    derivative function. Should take an input of size `[x; x(t - lag_1); ...; x(t - lag_n)]`
+    and produce and output shaped like `x`.
+  - `tspan`: The timespan to be solved on.
+  - `hist`: Defines the history function `h(u, p, t)` for values before the start of the
+    integration. Note that `u` is supposed to be used to return a value that matches the
+    size of `u`.
+  - `lags`: Defines the lagged values that should be utilized in the neural network.
+  - `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
+    default algorithm from DifferentialEquations.jl.
+  - `sensealg`: The choice of differentiation algorithm used in the backpropagation.
+    Defaults to using reverse-mode automatic differentiation via Tracker.jl
+  - `kwargs`: Additional arguments splatted to the ODE solver. See the
+    [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
+    documentation for more details.
+
+# Fields
+
+  - `model`: Lux layer used as the delayed derivative model.
+  - `tspan`: Integration time span.
+  - `hist`: History function for times before the start of the integration.
+  - `lags`: Constant delays used by the DDE.
+  - `args`: Positional solver arguments, usually including the DDE algorithm.
+  - `kwargs`: Keyword solver arguments forwarded to `solve`.
+
+# Returns
+
+A [`NeuralDELayer`](@ref). Calling the layer as `ndde(x, ps, st)` returns
+`(sol, new_state)`, where `sol` is the SciML DDE solution.
+
+# Examples
 
 ```julia
-NeuralCDDE(model,tspan,hist,lags,alg=nothing,args...;
-          sensealg=TrackerAdjoint(),kwargs...)
+using DiffEqFlux, Lux, Random
+
+rng = Random.default_rng()
+model = Lux.Dense(4 => 2)
+hist(u, p, t) = u
+layer = NeuralCDDE(model, (0.0f0, 1.0f0), hist, [0.1f0])
+ps, st = Lux.setup(rng, layer)
+sol, st = layer(Float32[1, 0], ps, st)
 ```
-
-Arguments:
-
-- `model`: A Flux.Chain or Lux.AbstractExplicitLayer neural network that defines the derivative function.
-  Should take an input of size `[x;x(t-lag_1);...;x(t-lag_n)]` and produce and
-  output shaped like `x`.
-- `tspan`: The timespan to be solved on.
-- `hist`: Defines the history function `h(t)` for values before the start of the
-  integration.
-- `lags`: Defines the lagged values that should be utilized in the neural network.
-- `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
-  default algorithm from DifferentialEquations.jl.
-- `sensealg`: The choice of differentiation algorthm used in the backpropogation.
-  Defaults to using reverse-mode automatic differentiation via Tracker.jl
-- `kwargs`: Additional arguments splatted to the ODE solver. See the
-  [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
-  documentation for more details.
-
 """
-Unsupported_NeuralCDDE_pairing_message = """
-                                         NeuralCDDE can only be instantiated with a Flux chain
-                                         """
-
-struct Unsupported_pairing <:Exception
-  msg::Any
+@concrete struct NeuralCDDE <: NeuralDELayer
+    model <: AbstractLuxLayer
+    tspan
+    hist
+    lags
+    args
+    kwargs
 end
 
-function Base.showerror(io::IO, e::Unsupported_pairing)
-  println(io, e.msg)
+function NeuralCDDE(model, tspan, hist, lags, args...; kwargs...)
+    !(model isa AbstractLuxLayer) && (model = FromFluxAdaptor()(model))
+    return NeuralCDDE(model, tspan, hist, lags, args, kwargs)
 end
 
-struct NeuralCDDE{P,M,RE,H,L,T,A,K} <: NeuralDELayer
-    p::P
-    model::M
-    re::RE
-    hist::H
-    lags::L
-    tspan::T
-    args::A
-    kwargs::K
-end
+function (n::NeuralCDDE)(x, ps, st)
+    model = StatefulLuxLayer{fixed_state_type(n.model)}(n.model, nothing, st)
 
-function NeuralCDDE(model,tspan,hist,lags,args...;p=nothing,kwargs...)
-  _p,re = Flux.destructure(model)
-  if p === nothing
-      p = _p
-  end
-  NeuralCDDE{typeof(p),typeof(model),typeof(re),typeof(hist),typeof(lags),
-      typeof(tspan),typeof(args),typeof(kwargs)}(p,model,
-      re,hist,lags,tspan,args,kwargs)
-end
-
-function NeuralCDDE(model::LuxCore.AbstractExplicitLayer,tspan,hist,lags,args...;p = nothing,kwargs...)
-  throw(Unsupported_pairing(Unsupported_NeuralCDDE_pairing_message))
-#  re = nothing
-#  new{typeof(p),typeof(model),typeof(re),typeof(hist),typeof(lags),
-#     typeof(tspan),typeof(args),typeof(kwargs)}(p,model,
-#     re,hist,lags,tspan,args,kwargs)
-end
-
-@functor NeuralCDDE (p,)
-
-function (n::NeuralCDDE)(x,p=n.p)
-    function dudt_(u,h,p,t)
-        _u = vcat(u,(h(p,t-lag) for lag in n.lags)...)
-        n.re(p)(_u)
+    function dudt(u, h, p, t)
+        xs = mapfoldl(lag -> h(p, t - lag), vcat, n.lags)
+        return model(vcat(u, xs), p)
     end
-    ff = DDEFunction{false}(dudt_,tgrad=basic_dde_tgrad)
-    prob = DDEProblem{false}(ff,x,n.hist,n.tspan,p,constant_lags = n.lags)
-    solve(prob,n.args...;sensealg=TrackerAdjoint(),n.kwargs...)
+
+    ff = DDEFunction{false}(dudt; tgrad = basic_dde_tgrad)
+    prob = DDEProblem{false}(
+        ff, x, (p, t) -> n.hist(x, p, t), n.tspan, ps; constant_lags = n.lags
+    )
+
+    return (solve(prob, n.args...; sensealg = TrackerAdjoint(), n.kwargs...), model.st)
 end
 
 """
+    NeuralDAE(model, constraints_model, tspan, args...; differential_vars = nothing,
+        sensealg = TrackerAdjoint(), kwargs...)
+
 Constructs a neural differential-algebraic equation (neural DAE).
 
+# Arguments
+
+  - `model`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines the
+    derivative function. Should take an input of size `x` and produce the residual of
+    `f(dx,x,t)` for only the differential variables.
+  - `constraints_model`: A function `constraints_model(u,p,t)` for the fixed
+    constraints to impose on the algebraic equations.
+  - `tspan`: The timespan to be solved on.
+  - `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
+    default algorithm from DifferentialEquations.jl.
+  - `sensealg`: The choice of differentiation algorithm used in the backpropagation.
+    Defaults to using reverse-mode automatic differentiation via Tracker.jl
+  - `kwargs`: Additional arguments splatted to the ODE solver. See the
+    [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
+    documentation for more details.
+
+# Fields
+
+  - `model`: Lux layer used for differential-variable residuals.
+  - `constraints_model`: Function returning residuals for algebraic constraints.
+  - `tspan`: Integration time span.
+  - `args`: Positional solver arguments, usually including the DAE algorithm.
+  - `differential_vars`: Boolean mask marking differential variables.
+  - `kwargs`: Keyword solver arguments forwarded to `solve`.
+
+# Returns
+
+A [`NeuralDELayer`](@ref). Calling the layer as `ndae((u0, du0), ps, st)` returns
+`(sol, new_state)`, where `sol` is the SciML DAE solution.
+
+# Examples
+
 ```julia
-NeuralDAE(model,constraints_model,tspan,alg=nothing,args...;
-          sensealg=TrackerAdjoint(),kwargs...)
+using DiffEqFlux, Lux, Random
+
+rng = Random.default_rng()
+model = Lux.Dense(4 => 1)
+constraints(u, p, t) = [sum(u) - 1]
+layer = NeuralDAE(model, constraints, (0.0f0, 1.0f0);
+    differential_vars = [true, false])
+ps, st = Lux.setup(rng, layer)
+sol, st = layer((Float32[1, 0], Float32[0, 0]), ps, st)
 ```
-
-Arguments:
-
-- `model`: A Flux.Chain or Lux.AbstractExplicitLayer neural network that defines the derivative function.
-  Should take an input of size `x` and produce the residual of `f(dx,x,t)`
-  for only the differential variables.
-- `constraints_model`: A function `constraints_model(u,p,t)` for the fixed
-  constaints to impose on the algebraic equations.
-- `tspan`: The timespan to be solved on.
-- `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
-  default algorithm from DifferentialEquations.jl.
-- `sensealg`: The choice of differentiation algorthm used in the backpropogation.
-  Defaults to using reverse-mode automatic differentiation via Tracker.jl
-- `kwargs`: Additional arguments splatted to the ODE solver. See the
-  [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
-  documentation for more details.
-
 """
-struct NeuralDAE{P,M,M2,D,RE,T,DV,A,K} <: NeuralDELayer
-    model::M
-    constraints_model::M2
-    p::P
-    du0::D
-    re::RE
-    tspan::T
-    differential_vars::DV
-    args::A
-    kwargs::K
+@concrete struct NeuralDAE <: NeuralDELayer
+    model <: AbstractLuxLayer
+    constraints_model
+    tspan
+    args
+    differential_vars
+    kwargs
 end
 
-function NeuralDAE(model,constraints_model,tspan,du0=nothing,args...;p=nothing,differential_vars=nothing,kwargs...)
-  _p,re = Flux.destructure(model)
-
-  if p === nothing
-      p = _p
-  end
-
-  NeuralDAE{typeof(p),typeof(model),typeof(constraints_model),
-      typeof(du0),typeof(re),typeof(tspan),
-      typeof(differential_vars),typeof(args),typeof(kwargs)}(
-      model,constraints_model,p,du0,re,tspan,differential_vars,
-      args,kwargs)
+function NeuralDAE(
+        model, constraints_model, tspan, args...; differential_vars = nothing, kwargs...
+    )
+    !(model isa AbstractLuxLayer) && (model = FromFluxAdaptor()(model))
+    return NeuralDAE(model, constraints_model, tspan, args, differential_vars, kwargs)
 end
 
-function NeuralDAE(model::LuxCore.AbstractExplicitLayer,constraints_model,tspan,du0=nothing,args...;p=nothing,differential_vars=nothing,kwargs...)
-  re = nothing
+function (n::NeuralDAE)(u_du::Tuple, p, st)
+    u0, du0 = u_du
+    model = StatefulLuxLayer{fixed_state_type(n.model)}(n.model, nothing, st)
 
-  NeuralDAE{typeof(p),typeof(model),typeof(constraints_model),
-      typeof(du0),typeof(re),typeof(tspan),
-      typeof(differential_vars),typeof(args),typeof(kwargs)}(
-      model,constraints_model,p,du0,re,tspan,differential_vars,
-      args,kwargs)
-end
-
-@functor NeuralDAE (p,)
-
-function (n::NeuralDAE)(x,du0=n.du0,p=n.p)
-    function f(du,u,p,t)
-        nn_out = n.re(p)(vcat(u,du))
-        alg_out = n.constraints_model(u,p,t)
-        iter_nn = 0
-        iter_consts = 0
-        map(n.differential_vars) do isdiff
+    function f(du, u, p, t)
+        nn_out = model(vcat(u, du), p)
+        alg_out = n.constraints_model(u, p, t)
+        iter_nn, iter_const = 0, 0
+        res = map(n.differential_vars) do isdiff
             if isdiff
                 iter_nn += 1
                 nn_out[iter_nn]
             else
-                iter_consts += 1
-                alg_out[iter_consts]
+                iter_const += 1
+                alg_out[iter_const]
             end
         end
+        return res
     end
-    prob = DAEProblem{false}(f,du0,x,n.tspan,p,differential_vars=n.differential_vars)
-    solve(prob,n.args...;sensealg=TrackerAdjoint(),n.kwargs...)
-end
 
-function (n::NeuralDAE{P,M})(x,p,st) where {P,M<:LuxCore.AbstractExplicitLayer}
-  du0 = n.du0
-  function f(du,u,p,t;st=st)
-      nn_out, st = n.model(vcat(u,du),p,st)
-      alg_out = n.constraints_model(u,p,t)
-      iter_nn = 0
-      iter_consts = 0
-      map(n.differential_vars) do isdiff
-          if isdiff
-              iter_nn += 1
-              nn_out[iter_nn]
-          else
-              iter_consts += 1
-              alg_out[iter_consts]
-          end
-      end
-  end
-  prob = DAEProblem{false}(f,du0,x,n.tspan,p,differential_vars=n.differential_vars)
-  return solve(prob,n.args...;sensealg=TrackerAdjoint(),n.kwargs...), st
+    prob = DAEProblem{false}(f, du0, u0, n.tspan, p; n.differential_vars)
+    return solve(prob, n.args...; sensealg = TrackerAdjoint(), n.kwargs...), st
 end
 
 """
-Constructs a physically-constrained continuous-time recurrant neural network,
-also known as a neural differential-algebraic equation (neural DAE), with a
-mass matrix and a fast gradient calculation via adjoints [1]. The mass matrix
-formulation is:
+    NeuralODEMM(model, constraints_model, tspan, mass_matrix, alg = nothing, args...;
+        sensealg = InterpolatingAdjoint(autojacvec = ZygoteVJP()), kwargs...)
+
+Constructs a physically-constrained continuous-time recurrent neural network, also known as
+a neural differential-algebraic equation (neural DAE), with a mass matrix and a fast
+gradient calculation via adjoints [1]. The mass matrix formulation is:
 
 ```math
 Mu' = f(u,p,t)
 ```
 
-where `M` is semi-explicit, i.e. singular with zeros for rows corresponding to
-the constraint equations.
+where `M` is semi-explicit, i.e. singular with zeros for rows corresponding to the
+constraint equations.
+
+# Arguments
+
+  - `model`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines the
+    ̇`f(u,p,t)`
+  - `constraints_model`: A function `constraints_model(u,p,t)` for the fixed constraints to
+    impose on the algebraic equations.
+  - `tspan`: The timespan to be solved on.
+  - `mass_matrix`: The mass matrix associated with the DAE.
+  - `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the default
+    algorithm from DifferentialEquations.jl. This method requires an implicit ODE solver
+    compatible with singular mass matrices. Consult the
+    [DAE solvers](https://docs.sciml.ai/DiffEqDocs/stable/solvers/dae_solve/) documentation
+    for more details.
+  - `sensealg`: The choice of differentiation algorithm used in the backpropagation.
+    Defaults to an adjoint method. See
+    the [Local Sensitivity Analysis](https://docs.sciml.ai/SciMLSensitivity/stable/)
+    documentation for more details.
+  - `kwargs`: Additional arguments splatted to the ODE solver. See the
+    [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
+    documentation for more details.
+
+# Fields
+
+  - `model`: Lux layer used for the differential rows of `f(u, p, t)`.
+  - `constraints_model`: Function returning algebraic constraint rows.
+  - `tspan`: Integration time span.
+  - `mass_matrix`: Mass matrix passed to `ODEFunction`.
+  - `args`: Positional solver arguments, usually including the implicit ODE algorithm.
+  - `kwargs`: Keyword solver arguments forwarded to `solve`.
+
+# Returns
+
+A [`NeuralDELayer`](@ref). Calling the layer as `node(x, ps, st)` returns
+`(sol, new_state)`, where `sol` is the SciML ODE solution for the mass-matrix
+formulation.
+
+# Examples
 
 ```julia
-NeuralODEMM(model,constraints_model,tspan,mass_matrix,alg=nothing,args...;kwargs...)
+using DiffEqFlux, Lux, Random, LinearAlgebra
+
+rng = Random.default_rng()
+model = Lux.Dense(2 => 1)
+constraints(u, p, t) = [sum(u) - 1]
+mass_matrix = Diagonal([1.0f0, 0.0f0])
+layer = NeuralODEMM(model, constraints, (0.0f0, 1.0f0), mass_matrix)
+ps, st = Lux.setup(rng, layer)
+sol, st = layer(Float32[1, 0], ps, st)
 ```
-
-Arguments:
-
-- `model`: A Flux.Chain or Lux.AbstractExplicitLayer neural network that defines the ̇`f(u,p,t)`
-- `constraints_model`: A function `constraints_model(u,p,t)` for the fixed
-  constaints to impose on the algebraic equations.
-- `tspan`: The timespan to be solved on.
-- `mass_matrix`: The mass matrix associated with the DAE
-- `alg`: The algorithm used to solve the ODE. Defaults to `nothing`, i.e. the
-  default algorithm from DifferentialEquations.jl. This method requires an
-  implicit ODE solver compatible with singular mass matrices. Consult the
-  [DAE solvers](https://docs.sciml.ai/DiffEqDocs/stable/solvers/dae_solve/) documentation for more details.
-- `sensealg`: The choice of differentiation algorthm used in the backpropogation.
-  Defaults to an adjoint method. See
-  the [Local Sensitivity Analysis](https://docs.sciml.ai/DiffEqDocs/stable/analysis/sensitivity/)
-  documentation for more details.
-- `kwargs`: Additional arguments splatted to the ODE solver. See the
-  [Common Solver Arguments](https://docs.sciml.ai/DiffEqDocs/stable/basics/common_solver_opts/)
-  documentation for more details.
-
 """
-struct NeuralODEMM{M,M2,P,RE,T,MM,A,K} <: NeuralDELayer
-    model::M
-    constraints_model::M2
-    p::P
-    re::RE
-    tspan::T
-    mass_matrix::MM
-    args::A
-    kwargs::K
+@concrete struct NeuralODEMM <: NeuralDELayer
+    model <: AbstractLuxLayer
+    constraints_model
+    tspan
+    mass_matrix
+    args
+    kwargs
 end
 
-function NeuralODEMM(model,constraints_model,tspan,mass_matrix,args...;
-                      p = nothing, kwargs...)
-  _p,re = Flux.destructure(model)
-
-  if p === nothing
-    p = _p
-  end
-  NeuralODEMM{typeof(model),typeof(constraints_model),typeof(p),typeof(re),
-      typeof(tspan),typeof(mass_matrix),typeof(args),typeof(kwargs)}(
-      model,constraints_model,p,re,tspan,mass_matrix,args,kwargs)
+function NeuralODEMM(model, constraints_model, tspan, mass_matrix, args...; kwargs...)
+    !(model isa AbstractLuxLayer) && (model = FromFluxAdaptor()(model))
+    return NeuralODEMM(model, constraints_model, tspan, mass_matrix, args, kwargs)
 end
 
-function NeuralODEMM(model::LuxCore.AbstractExplicitLayer,constraints_model,tspan,mass_matrix,args...;
-                      p=nothing,kwargs...)
-  re = nothing
-  NeuralODEMM{typeof(model),typeof(constraints_model),typeof(p),typeof(re),
-      typeof(tspan),typeof(mass_matrix),typeof(args),typeof(kwargs)}(
-      model,constraints_model,p,re,tspan,mass_matrix,args,kwargs)
-end
+function (n::NeuralODEMM)(x, ps, st)
+    model = StatefulLuxLayer{fixed_state_type(n.model)}(n.model, nothing, st)
 
-@functor NeuralODEMM (p,)
-
-function (n::NeuralODEMM)(x,p=n.p)
-    function f(u,p,t)
-        nn_out = n.re(p)(u)
-        alg_out = n.constraints_model(u,p,t)
-        vcat(nn_out,alg_out)
+    function f(u, p, t)
+        nn_out = model(u, p)
+        alg_out = n.constraints_model(u, p, t)
+        return vcat(nn_out, alg_out)
     end
-    dudt_= ODEFunction{false}(f,mass_matrix=n.mass_matrix,tgrad=basic_tgrad)
-    prob = ODEProblem{false}(dudt_,x,n.tspan,p)
 
-    sense = InterpolatingAdjoint(autojacvec=ZygoteVJP())
-    solve(prob,n.args...;sensealg=sense,n.kwargs...)
-end
+    dudt = ODEFunction{false}(f; mass_matrix = n.mass_matrix, tgrad = basic_tgrad)
+    prob = ODEProblem{false}(dudt, x, n.tspan, ps)
 
-function (n::NeuralODEMM{M})(x,p,st) where {M<:LuxCore.AbstractExplicitLayer}
-  function f(u,p,t;st=st)
-      nn_out,st = n.model(u,p,st)
-      alg_out = n.constraints_model(u,p,t)
-      return vcat(nn_out,alg_out)
-  end
-  dudt_= ODEFunction{false}(f;mass_matrix=n.mass_matrix,tgrad=basic_tgrad)
-  prob = ODEProblem{false}(dudt_,x,n.tspan,p)
-
-  sense = InterpolatingAdjoint(autojacvec=ZygoteVJP())
-  return solve(prob,n.args...;sensealg=sense,n.kwargs...), st
+    return (
+        solve(
+            prob, n.args...;
+            sensealg = InterpolatingAdjoint(; autojacvec = ZygoteVJP()), n.kwargs...
+        ),
+        model.st,
+    )
 end
 
 """
-Constructs an Augmented Neural Differential Equation Layer.
+    ODERNN(model, cell, args...; ordering=BatchLastIndex(), return_sequence=false, kwargs...)
 
-```julia
-AugmentedNDELayer(nde, adim::Int)
-```
+Constructs an ODE-RNN layer that combines a Neural ODE for continuous hidden state dynamics
+with a recurrent neural network cell for processing sequential observations. This implements
+a variant of the ODE-RNN/ODE-LSTM architecture from [1, 2].
+
+The layer processes sequential data by:
+1. Initializing a hidden state from the first input using the RNN cell
+2. Solving a Neural ODE from the first to last time point to get continuous hidden dynamics
+3. At each time step, using the ODE-evolved hidden state with the RNN cell to process inputs
 
 Arguments:
 
-- `nde`: Any Neural Differential Equation Layer
-- `adim`: The number of dimensions the initial conditions should be lifted
+  - `model`: A `Flux.Chain` or `Lux.AbstractLuxLayer` neural network that defines the ODE
+    dynamics dh/dt = model(h). Should map hidden_size -> hidden_size.
+  - `cell`: A `Lux.AbstractRecurrentCell` (e.g., `LSTMCell`, `GRUCell`, `RNNCell`) that
+    processes inputs at each time step.
+  - `args`: Additional positional arguments passed to the ODE solver.
+  - `ordering`: The time series data batch ordering. Defaults to `BatchLastIndex()`.
+  - `return_sequence`: If `true`, returns outputs at all time steps. If `false`, returns
+    only the final output. Defaults to `false`.
+  - `sensealg`: The choice of differentiation algorithm used in the backpropagation.
+    Defaults to `InterpolatingAdjoint(; autojacvec = ZygoteVJP())`.
+  - `kwargs`: Additional keyword arguments splatted to the ODE solver.
+
+The forward pass takes a tuple `(x, ts)` where:
+  - `x`: Input array of shape `(input_dim, seq_len, batch)` with `BatchLastIndex()` ordering
+  - `ts`: Vector of time points corresponding to each element in the sequence
+
+Example:
+
+```julia
+using DiffEqFlux, Lux, Random
+
+rng = Random.default_rng()
+input_dim, hidden_dim, seq_len, batch_size = 2, 4, 10, 3
+
+# ODE dynamics model (hidden_dim -> hidden_dim)
+ode_model = Chain(Dense(hidden_dim => hidden_dim, tanh))
+
+# RNN cell (processes input_dim -> hidden_dim)
+cell = LSTMCell(input_dim => hidden_dim)
+
+# Create ODE-RNN layer
+odernn = ODERNN(ode_model, cell; return_sequence=true)
+
+# Setup
+ps, st = Lux.setup(rng, odernn)
+
+# Input data and time points
+x = randn(Float32, input_dim, seq_len, batch_size)
+ts = collect(Float32, range(0, 1, length=seq_len))
+
+# Forward pass
+outputs, st = odernn((x, ts), ps, st)
+```
 
 References:
 
-[1] Dupont, Emilien, Arnaud Doucet, and Yee Whye Teh. "Augmented neural ODEs." In Proceedings of the 33rd International Conference on Neural Information Processing Systems, pp. 3140-3150. 2019.
+[1] Rubanova, Yulia, Ricky TQ Chen, and David Duvenaud. "Latent ordinary differential
+    equations for irregularly-sampled time series." Advances in neural information
+    processing systems 32 (2019).
 
+[2] Lechner, Mathias, and Ramin Hasani. "Learning long-term dependencies in irregularly-sampled
+    time series." arXiv preprint arXiv:2006.04418 (2020).
 """
-abstract type AugmentedNDEType <: LuxCore.AbstractExplicitContainerLayer{(:nde,)} end 
-struct AugmentedNDELayer{DE<:Union{NeuralDELayer,NeuralSDELayer}} <: AugmentedNDEType
-    nde::DE
-    adim::Int
+@concrete struct ODERNN <: AbstractLuxContainerLayer{(:model, :cell)}
+    model <: AbstractLuxLayer
+    cell <: AbstractLuxLayer
+    return_sequence
+    ordering
+    args
+    kwargs
 end
 
-(ande::AugmentedNDELayer)(x, args...) = ande.nde(augment(x, ande.adim), args...)
+function ODERNN(
+        model, cell, args...;
+        ordering = Lux.BatchLastIndex(),
+        return_sequence::Bool = false,
+        kwargs...
+    )
+    !(model isa AbstractLuxLayer) && (model = FromFluxAdaptor()(model))
+    !(cell isa AbstractLuxLayer) && (cell = FromFluxAdaptor()(cell))
+    return ODERNN(model, cell, static(return_sequence), ordering, args, kwargs)
+end
 
-augment(x::AbstractVector{S}, augment_dim::Int) where S =
-    cat(x, zeros(S, (augment_dim,)), dims = 1)
+function (odernn::ODERNN)((x, ts)::Tuple{<:AbstractArray, <:AbstractVector}, ps, st)
+    xs = Lux.LuxOps.eachslice(x, odernn.ordering)
 
-augment(x::AbstractArray{S, T}, augment_dim::Int) where {S, T} =
-    cat(x, zeros(S, (size(x)[1:(T - 2)]..., augment_dim, size(x, T))), dims = T - 1)
+    # Initialize with first input to get initial hidden state
+    x0 = first(xs)
+    (_, init_carry), st_cell = odernn.cell(x0, ps.cell, st.cell)
+    h0 = first(init_carry)
 
-Base.getproperty(ande::AugmentedNDELayer, sym::Symbol) =
-    hasproperty(ande, sym) ? getfield(ande, sym) : getfield(ande.nde, sym)
+    # Solve Neural ODE once from first to last time point
+    model = StatefulLuxLayer{fixed_state_type(odernn.model)}(odernn.model, nothing, st.model)
+    dudt(u, p, t) = model(u, p)
+    ff = ODEFunction{false}(dudt; tgrad = basic_tgrad)
+    tspan = (first(ts), last(ts))
+    prob = ODEProblem{false}(ff, h0, tspan, ps.model)
+    sol = solve(
+        prob, odernn.args...;
+        saveat = ts,
+        sensealg = InterpolatingAdjoint(; autojacvec = ZygoteVJP()),
+        odernn.kwargs...
+    )
 
-abstract type HelperLayer <: Function end
+    # Process sequence with RNN cell, using ODE solutions as hidden states
+    carry = init_carry
+    outputs = __odernn_loop(odernn, xs, sol, carry, ps, st_cell)
+
+    new_st = (; model = model.st, cell = st_cell)
+
+    if known(odernn.return_sequence)
+        return outputs, new_st
+    else
+        return last(outputs), new_st
+    end
+end
+
+function __odernn_loop(odernn, xs, sol, carry, ps, st_cell)
+    # Use foldl to accumulate outputs in a differentiable way
+    init = (carry, st_cell, ())
+    result = foldl(enumerate(xs); init = init) do (carry, st_cell, outputs), (i, x_i)
+        # Get ODE solution at this time point and update carry
+        ode_h = sol.u[i]
+        carry = (ode_h, Base.tail(carry)...)
+
+        # RNN cell processes input with ODE-evolved carry
+        (out, carry), st_cell = odernn.cell((x_i, carry), ps.cell, st_cell)
+        return (carry, st_cell, (outputs..., out))
+    end
+    return result[3]
+end
 
 """
+    AugmentedNDELayer(model, adim::Int)
+
+Constructs an Augmented Neural Differential Equation Layer.
+
+# Arguments
+
+  - `model`: Any Neural Differential Equation Layer.
+  - `adim`: The number of dimensions the initial conditions should be lifted.
+
+# Returns
+
+A `Lux.Chain` that first augments the input with `adim` zero-valued dimensions and
+then calls `nde`.
+
+# Examples
+
+```julia
+using DiffEqFlux, Lux
+
+nde = NeuralODE(Lux.Dense(3 => 3), (0.0f0, 1.0f0))
+augmented = AugmentedNDELayer(nde, 1)
+```
+
+# References
+
+[1] Dupont, Emilien, Arnaud Doucet, and Yee Whye Teh. "Augmented neural ODEs." In
+Proceedings of the 33rd International Conference on Neural Information Processing
+Systems, pp. 3140-3150. 2019.
+"""
+function AugmentedNDELayer(model::Union{NeuralDELayer, NeuralSDELayer}, adim::Int)
+    return Chain(Base.Fix2(__augment, adim), model)
+end
+
+function __augment(x::AbstractVector, augment_dim::Int)
+    y = CRC.@ignore_derivatives fill!(similar(x, augment_dim), 0)
+    return vcat(x, y)
+end
+
+function __augment(x::AbstractArray, augment_dim::Int)
+    y = CRC.@ignore_derivatives fill!(
+        similar(x, size(x)[1:(ndims(x) - 2)]..., augment_dim, size(x, ndims(x))), 0
+    )
+    return cat(x, y; dims = Val(ndims(x) - 1))
+end
+
+"""
+    DimMover(; from = -2, to = -1)
+
 Constructs a Dimension Mover Layer.
 
-```julia
-DimMover(from, to)
-```
-"""
-struct DimMover <: HelperLayer
-    from::Integer
-    to::Integer
-end
+We can have Lux's conventional order `(data, channel, batch)` by using it as the last layer
+of `AbstractLuxLayer` to swap the batch-index and the time-index of the Neural DE's
+output considering that each time point is a channel.
 
-function (dm::DimMover)(x)
-    @assert !iszero(dm.from)
-    @assert !iszero(dm.to)
+# Keywords
 
-    from = dm.from > 0 ? dm.from : (length(size(x)) + 1 + dm.from)
-    to = dm.to > 0 ? dm.to : (length(size(x)) + 1 + dm.to)
+  - `from`: Source dimension. Negative values are counted from the end, so `-2`
+    refers to the second-to-last dimension.
+  - `to`: Destination dimension. Negative values are counted from the end.
 
-    cat(eachslice(x; dims=from)...; dims=to)
-end
+# Fields
 
-"""
-We can have Flux's conventional order (data, channel, batch)
-by using it as the last layer of `Flux.Chain` to swap the batch-index and the time-index of the Neural DE's output.
-considering that each time point is a channel.
+  - `from`: Stored source dimension.
+  - `to`: Stored destination dimension.
+
+# Returns
+
+A Lux layer. Calling `DimMover(; from, to)(x, ps, st)` returns `(moved_x, st)`.
+
+# Examples
 
 ```julia
-FluxBatchOrder = DimMover(-2, -1)
+using DiffEqFlux
+
+layer = DimMover(; from = -2, to = -1)
+y, st = layer(rand(2, 3, 4), nothing, NamedTuple())
 ```
 """
-const FluxBatchOrder = DimMover(-2, -1)
+@concrete struct DimMover <: AbstractLuxLayer
+    from
+    to
+end
+
+function DimMover(; from = -2, to = -1)
+    @assert from !== 0 && to !== 0
+    return DimMover(from, to)
+end
+
+function (dm::DimMover)(x, ps, st)
+    from = dm.from > 0 ? dm.from : (ndims(x) + 1 + dm.from)
+    to = dm.to > 0 ? dm.to : (ndims(x) + 1 + dm.to)
+
+    return cat(eachslice(x; dims = from)...; dims = to), st
+end

@@ -1,72 +1,38 @@
-using DiffEqFlux, SafeTestsets, Test
+using SafeTestsets, Test
+using SciMLTesting
 
-const GROUP = get(ENV, "GROUP", "All")
-const is_APPVEYOR = (Sys.iswindows() && haskey(ENV, "APPVEYOR"))
-const is_CI = haskey(ENV, "CI")
-
-@time begin
-    if GROUP == "All" || GROUP == "DiffEqFlux" || GROUP == "Layers"
-        @safetestset "Collocation" begin
-            include("collocation.jl")
-        end
-        @safetestset "Stiff Nested AD Tests" begin
-            include("stiff_nested_ad.jl")
-        end
-    end
-
-    if GROUP == "All" || GROUP == "DiffEqFlux" || GROUP == "BasicNeuralDE"
-        @safetestset "Neural DE Tests with Lux" begin
-            include("neural_de_lux.jl")
-        end
-        @safetestset "Neural DE Tests" begin
-            include("neural_de.jl")
-        end
-        @safetestset "Augmented Neural DE Tests" begin
-            include("augmented_nde.jl")
-        end
-        #@safetestset "Neural Graph DE" begin include("neural_gde.jl") end
-
-        @safetestset "Neural ODE MM Tests" begin
-            include("neural_ode_mm.jl")
-        end
-        @safetestset "Tensor Product Layer" begin
-            include("tensor_product_test.jl")
-        end
-        @safetestset "Spline Layer" begin
-            include("spline_layer_test.jl")
-        end
-        @safetestset "Multiple shooting" begin
-            include("multiple_shoot.jl")
-        end
-    end
-
-    if GROUP == "All" || GROUP == "AdvancedNeuralDE"
-        @safetestset "CNF Layer Tests" begin
-            include("cnf_test.jl")
-        end
-        @safetestset "Neural Second Order ODE Tests" begin
-            include("second_order_ode.jl")
-        end
-        @safetestset "Neural Hamiltonian ODE Tests" begin
-            include("hamiltonian_nn.jl")
-        end
-    end
-
-    if GROUP == "Newton"
-        @safetestset "Newton Neural ODE Tests" begin
-            include("newton_neural_ode.jl")
-        end
-    end
-
-    if !is_APPVEYOR && GROUP == "GPU"
-        @safetestset "Neural DE GPU Tests" begin
-            include("neural_de_gpu.jl")
-        end
-        @safetestset "MNIST GPU Tests: Fully Connected NN" begin
-            include("mnist_gpu.jl")
-        end
-        @safetestset "MNIST GPU Tests: Convolutional NN" begin
-            include("mnist_conv_gpu.jl")
-        end
-    end
-end
+run_tests(;
+    core = () -> nothing,
+    groups = Dict(
+        "BasicNeuralDE" => function ()
+            @safetestset "Neural DE" include("BasicNeuralDE/neural_de_tests.jl")
+            @safetestset "Neural DAE" include("BasicNeuralDE/neural_dae_tests.jl")
+            @safetestset "Neural ODE MM" include("BasicNeuralDE/neural_ode_mm_tests.jl")
+            return @safetestset "Multiple Shooting" include("BasicNeuralDE/multiple_shoot_tests.jl")
+        end,
+        "AdvancedNeuralDE" => function ()
+            return @safetestset "Second Order ODE" include("AdvancedNeuralDE/second_order_ode_tests.jl")
+        end,
+        "CNF" => function ()
+            return @safetestset "CNF" include("AdvancedNeuralDE/cnf_tests.jl")
+        end,
+        "Newton" => function ()
+            return @safetestset "Newton Neural ODE" include("Newton/newton_neural_ode_tests.jl")
+        end,
+        "Layers" => function ()
+            @safetestset "Collocation" include("Layers/collocation_tests.jl")
+            return @safetestset "Stiff Nested AD" include("Layers/stiff_nested_ad_tests.jl")
+        end,
+        "PublicInterface" => function ()
+            return @safetestset "Public interfaces" include("public_interface.jl")
+        end,
+        "CUDA" => (;
+            env = joinpath(@__DIR__, "CUDA"),
+            body = joinpath(@__DIR__, "CUDA", "cuda_tests.jl"),
+        ),
+    ),
+    qa = function ()
+        return @safetestset "QA" include("QA/qa_tests.jl")
+    end,
+    all = ["BasicNeuralDE", "AdvancedNeuralDE", "Newton", "Layers", "PublicInterface"],
+)

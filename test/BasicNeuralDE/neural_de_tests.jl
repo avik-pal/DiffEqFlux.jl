@@ -1,0 +1,298 @@
+using DiffEqFlux, Lux, ComponentArrays, Zygote, DelayDiffEq, OrdinaryDiffEq, StochasticDiffEq,
+    Random, Test
+import Flux
+
+rng = Xoshiro(0)
+
+@testset "NeuralODE" begin
+    @testset "$(nnlib)" for nnlib in ("Flux", "Lux")
+        mp = Float32[0.1, 0.1]
+        x = Float32[2.0; 0.0]
+        xs = Float32.(hcat([0.0; 0.0], [1.0; 0.0], [2.0; 0.0]))
+        tspan = (0.0f0, 1.0f0)
+
+        dudt = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(2 => 50, tanh), Flux.Dense(50 => 2))
+        else
+            Chain(Dense(2 => 50, tanh), Dense(50 => 2))
+        end
+
+        aug_dudt = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(4 => 50, tanh), Flux.Dense(50 => 4))
+        else
+            Chain(Dense(4 => 50, tanh), Dense(50 => 4))
+        end
+
+        @testset "u0: $(typeof(u0))" for u0 in (x, xs)
+            @testset "kwargs: $(kwargs))" for kwargs in (
+                    (; save_everystep = false, save_start = false),
+                    (;
+                        abstol = 1.0e-12, reltol = 1.0e-12,
+                        save_everystep = false, save_start = false,
+                    ),
+                    (; save_everystep = false, save_start = false, sensealg = TrackerAdjoint()),
+                    (;
+                        save_everystep = false, save_start = false,
+                        sensealg = BacksolveAdjoint(),
+                    ),
+                    (; saveat = 0.0f0:0.1f0:1.0f0),
+                    (; saveat = 0.1f0),
+                    (; saveat = 0.0f0:0.1f0:1.0f0, sensealg = TrackerAdjoint()),
+                    (; saveat = 0.1f0, sensealg = TrackerAdjoint()),
+                )
+                node = NeuralODE(dudt, tspan, Tsit5(); kwargs...)
+                pd, st = Lux.setup(rng, node)
+                pd = ComponentArray(pd)
+                grads = Zygote.gradient(sum ∘ first ∘ node, u0, pd, st)
+                @test !iszero(grads[1])
+                @test !iszero(grads[2])
+
+                anode = AugmentedNDELayer(NeuralODE(aug_dudt, tspan, Tsit5(); kwargs...), 2)
+                pd, st = Lux.setup(rng, anode)
+                pd = ComponentArray(pd)
+                grads = Zygote.gradient(sum ∘ first ∘ anode, u0, pd, st)
+                @test !iszero(grads[1])
+                @test !iszero(grads[2])
+            end
+        end
+    end
+end
+
+@testset "NeuralDSDE" begin
+    @testset "$(nnlib)" for nnlib in ("Flux", "Lux")
+        mp = Float32[0.1, 0.1]
+        x = Float32[2.0; 0.0]
+        xs = Float32.(hcat([0.0; 0.0], [1.0; 0.0], [2.0; 0.0]))
+        tspan = (0.0f0, 1.0f0)
+
+        dudt = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(2 => 50, tanh), Flux.Dense(50 => 2))
+        else
+            Chain(Dense(2 => 50, tanh), Dense(50 => 2))
+        end
+
+        aug_dudt = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(4 => 50, tanh), Flux.Dense(50 => 4))
+        else
+            Chain(Dense(4 => 50, tanh), Dense(50 => 4))
+        end
+
+        diffusion = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(2 => 50, tanh), Flux.Dense(50 => 2))
+        else
+            Chain(Dense(2 => 50, tanh), Dense(50 => 2))
+        end
+
+        aug_diffusion = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(4 => 50, tanh), Flux.Dense(50 => 4))
+        else
+            Chain(Dense(4 => 50, tanh), Dense(50 => 4))
+        end
+
+        tspan = (0.0f0, 0.1f0)
+        @testset "u0: $(typeof(u0)), solver: $(solver)" for u0 in (x, xs),
+                solver in (EulerHeun(), LambaEM(), SOSRI())
+
+            sode = NeuralDSDE(
+                dudt, diffusion, tspan, solver; saveat = 0.0f0:0.01f0:0.1f0, dt = 0.01f0
+            )
+            pd, st = Lux.setup(rng, sode)
+            pd = ComponentArray(pd)
+
+            grads = Zygote.gradient(sum ∘ first ∘ sode, u0, pd, st)
+            @test !iszero(grads[1])
+            @test !iszero(grads[2])
+            @test !iszero(grads[2][end])
+
+            sode = NeuralDSDE(
+                aug_dudt, aug_diffusion, tspan, solver;
+                saveat = 0.0f0:0.01f0:0.1f0, dt = 0.01f0
+            )
+            anode = AugmentedNDELayer(sode, 2)
+            pd, st = Lux.setup(rng, anode)
+            pd = ComponentArray(pd)
+
+            grads = Zygote.gradient(sum ∘ first ∘ anode, u0, pd, st)
+            @test !iszero(grads[1])
+            @test !iszero(grads[2])
+            @test !iszero(grads[2][end])
+        end
+    end
+end
+
+@testset "NeuralSDE" begin
+    @testset "$(nnlib)" for nnlib in ("Flux", "Lux")
+        mp = Float32[0.1, 0.1]
+        x = Float32[2.0; 0.0]
+        xs = Float32.(hcat([0.0; 0.0], [1.0; 0.0], [2.0; 0.0]))
+        tspan = (0.0f0, 1.0f0)
+
+        dudt = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(2 => 50, tanh), Flux.Dense(50 => 2))
+        else
+            Chain(Dense(2 => 50, tanh), Dense(50 => 2))
+        end
+
+        aug_dudt = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(4 => 50, tanh), Flux.Dense(50 => 4))
+        else
+            Chain(Dense(4 => 50, tanh), Dense(50 => 4))
+        end
+
+        diffusion_sde = if nnlib == "Flux"
+            Flux.Chain(
+                Flux.Dense(2 => 50, tanh), Flux.Dense(50 => 4), x -> reshape(x, 2, 2)
+            )
+        else
+            Chain(Dense(2 => 50, tanh), Dense(50 => 4), x -> reshape(x, 2, 2))
+        end
+
+        aug_diffusion_sde = if nnlib == "Flux"
+            Flux.Chain(
+                Flux.Dense(4 => 50, tanh), Flux.Dense(50 => 16), x -> reshape(x, 4, 4)
+            )
+        else
+            Chain(Dense(4 => 50, tanh), Dense(50 => 16), x -> reshape(x, 4, 4))
+        end
+
+        @testset "u0: $(typeof(u0)), solver: $(solver)" for u0 in (x,),
+                solver in (EulerHeun(), LambaEM())
+
+            sode = NeuralSDE(
+                dudt, diffusion_sde, tspan, 2, solver;
+                saveat = 0.0f0:0.01f0:0.1f0, dt = 0.01f0
+            )
+            pd, st = Lux.setup(rng, sode)
+            pd = ComponentArray(pd)
+
+            grads = Zygote.gradient(sum ∘ first ∘ sode, u0, pd, st)
+            @test !iszero(grads[1])
+            @test !iszero(grads[2])
+            @test !iszero(grads[2][end])
+
+            sode = NeuralSDE(
+                aug_dudt, aug_diffusion_sde, tspan, 4, solver;
+                saveat = 0.0f0:0.01f0:0.1f0, dt = 0.01f0
+            )
+            anode = AugmentedNDELayer(sode, 2)
+            pd, st = Lux.setup(rng, anode)
+            pd = ComponentArray(pd)
+
+            grads = Zygote.gradient(sum ∘ first ∘ anode, u0, pd, st)
+            @test !iszero(grads[1])
+            @test !iszero(grads[2])
+            @test !iszero(grads[2][end])
+        end
+    end
+end
+
+@testset "NeuralCDDE" begin
+    @testset "$(nnlib)" for nnlib in ("Flux", "Lux")
+        mp = Float32[0.1, 0.1]
+        x = Float32[2.0; 0.0]
+        xs = Float32.(hcat([0.0; 0.0], [1.0; 0.0], [2.0; 0.0]))
+        tspan = (0.0f0, 1.0f0)
+
+        dudt = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(6 => 50, tanh), Flux.Dense(50 => 2))
+        else
+            Chain(Dense(6 => 50, tanh), Dense(50 => 2))
+        end
+
+        aug_dudt = if nnlib == "Flux"
+            Flux.Chain(Flux.Dense(12 => 50, tanh), Flux.Dense(50 => 4))
+        else
+            Chain(Dense(12 => 50, tanh), Dense(50 => 4))
+        end
+
+        @testset "NeuralCDDE u0: $(typeof(u0))" for u0 in (x, xs)
+            dode = NeuralCDDE(
+                dudt, (0.0f0, 2.0f0), (u, p, t) -> zero(u), (0.1f0, 0.2f0),
+                MethodOfSteps(Tsit5()); saveat = 0.0f0:0.1f0:2.0f0
+            )
+            pd, st = Lux.setup(rng, dode)
+            pd = ComponentArray(pd)
+
+            grads = Zygote.gradient(sum ∘ first ∘ dode, u0, pd, st)
+            @test !iszero(grads[1])
+            @test !iszero(grads[2])
+
+            dode = NeuralCDDE(
+                aug_dudt, (0.0f0, 2.0f0), (u, p, t) -> zero(u), (0.1f0, 0.2f0),
+                MethodOfSteps(Tsit5()); saveat = 0.0f0:0.1f0:2.0f0
+            )
+            anode = AugmentedNDELayer(dode, 2)
+            pd, st = Lux.setup(rng, anode)
+            pd = ComponentArray(pd)
+
+            grads = Zygote.gradient(sum ∘ first ∘ anode, u0, pd, st)
+            @test !iszero(grads[1])
+            @test !iszero(grads[2])
+        end
+    end
+end
+
+@testset "DimMover" begin
+    r = rand(2, 3, 4, 5)
+    layer = DimMover()
+    ps, st = Lux.setup(rng, layer)
+
+    @test first(layer(r, ps, st))[:, :, :, 1] == r[:, :, 1, :]
+end
+
+@testset "ODERNN" begin
+    rng = Xoshiro(0)
+
+    input_dim, hidden_dim, seq_len, batch_size = 2, 4, 10, 3
+
+    # Note: We only test with Lux models because Flux recurrent cells have semantic
+    # differences in bias handling and cannot be converted to Lux equivalents
+    @testset "cell: $(cell_type)" for cell_type in ("LSTM", "GRU", "RNN")
+        # ODE dynamics model (hidden_dim -> hidden_dim)
+        ode_model = Chain(Dense(hidden_dim => hidden_dim, tanh))
+
+        # Create appropriate RNN cell
+        cell = if cell_type == "LSTM"
+            LSTMCell(input_dim => hidden_dim)
+        elseif cell_type == "GRU"
+            GRUCell(input_dim => hidden_dim)
+        else
+            RNNCell(input_dim => hidden_dim)
+        end
+
+        @testset "return_sequence: $(return_seq)" for return_seq in (false, true)
+            odernn = ODERNN(ode_model, cell, Tsit5(); return_sequence = return_seq)
+            ps, st = Lux.setup(rng, odernn)
+            ps = ComponentArray(ps)
+
+            # Create input data and time points
+            x = randn(rng, Float32, input_dim, seq_len, batch_size)
+            ts = collect(Float32, range(0, 1, length = seq_len))
+
+            # Test forward pass
+            output, st2 = odernn((x, ts), ps, st)
+
+            if return_seq
+                @test length(output) == seq_len
+                @test all(o -> size(o) == (hidden_dim, batch_size), output)
+            else
+                @test size(output) == (hidden_dim, batch_size)
+            end
+
+            # Test gradients
+            function loss(ps)
+                out, _ = odernn((x, ts), ps, st)
+                if return_seq
+                    return sum(sum, out)
+                else
+                    return sum(out)
+                end
+            end
+
+            grads = Zygote.gradient(loss, ps)
+            @test !iszero(grads[1])
+            @test !iszero(grads[1].model)
+            @test !iszero(grads[1].cell)
+        end
+    end
+end
